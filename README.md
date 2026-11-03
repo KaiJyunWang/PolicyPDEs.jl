@@ -19,22 +19,37 @@ using PolicyPDEs
 
 ## Problem setup
 
-An `HJBProblem` stores a user-defined model, a state domain, and explicit boundary
-data. It preserves their types without evaluating the model or copying inputs.
+An `HJBProblem` takes four separate components: `discount`, `drift`, `diffusion`,
+and `flow`. Each is a callable user-defined struct or a function taking the
+continuous state, control, and regime label `(x, a, i)`.
 
 ```julia
 using PolicyPDEs
 
-model = (; discount = 0.05, interest = 0.03, income = 1.0)
+discount = (x, c, i) -> 0.05
+drift = (x, c, i) -> (i == 1 ? 0.1 : 0.2) + 0.03 * x - c
+diffusion = (x, c, i) -> 0.0
+flow = (x, c, i) -> log(c)
+transition = (x, c, i, j) -> i == 1 ? 0.02 : 0.03
 domain = (; assets = (0.0, 100.0))
 boundary = (; assets = (lower = :state_constraint, upper = :state_constraint))
-problem = HJBProblem(model; domain, boundary)
+problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
+                     regimes = (1, 2), transition)
 ```
 
-The descriptors above illustrate storage. A discretizer will define how to
-interpret model primitives, domains, and boundary conditions; this constructor
-does not yet enforce such an interface or check mathematical well-posedness.
-See `?HJBProblem` for the constructor contract.
+`transition(x, a, i, j)` supplies the nonnegative intensity from regime `i` to
+regime `j`, for `i != j`. The coupling is
+`sum(q_ij * (v_j - v_i) for j != i)`, as in finite-income-state HJB systems.
+It may depend on the continuous state and source-regime control. By default,
+`regimes = (1,)` describes a single PDE; `transition = nothing` means no switching.
+`diffusion` supplies volatility sigma: the second-order operator uses
+`sigma * sigma' / 2`, not sigma itself as a variance coefficient.
+
+Inputs retain their types without copying or callback evaluation. Construction
+checks for nonempty, unique regime labels. Boundary descriptors above illustrate
+storage; numerical boundary treatment, return-shape and rate validation, and
+policy optimization await the spatial discretization and solver interfaces.
+See `?HJBProblem` and the [callable-struct example](examples/two_income_setup.jl).
 
 ## Planned workflow
 
@@ -42,7 +57,8 @@ Set up the economic problem, discretize space, then solve:
 
 ```julia
 # Proposed API; not implemented yet.
-problem = HJBProblem(model; domain, boundary)
+problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
+                     regimes = (1, 2), transition)
 discrete = discretize(problem, grid, UpwindFiniteDifference())
 solution = solve(discrete, SemiImplicit(dt=Inf); initial_value)
 
