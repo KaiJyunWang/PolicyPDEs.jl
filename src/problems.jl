@@ -38,6 +38,9 @@ discretizer.
 
 - `domain`: continuous state-space description, independent of a numerical grid.
 - `boundary`: explicit boundary data; there is no implicit boundary condition.
+  For linear conditions, use axis-keyed named tuples with `lower` and `upper`
+  entries holding [`LinearEqualityBoundary`](@ref) or
+  [`LinearInequalityBoundary`](@ref). Coefficients may depend on state and regime.
 - `regimes`: a nonempty tuple or vector of unique regime labels. Defaults to
   `(1,)` for a single PDE. The order determines the ordering of equations.
 - `transition`: callable `transition(x, a, i, j)` returning the finite,
@@ -51,7 +54,7 @@ discretizer.
 The problem stores inputs with their concrete types, without copying or
 evaluating components. Mutable inputs remain shared; do not mutate regime
 membership or ordering after construction. Construction checks only the regime
-collection. Callback return shapes, rate signs, boundary interpretation, and
+collection. Callback return shapes, rate signs, numerical boundary enforcement, and
 mathematical well-posedness must be checked by future numerical stages at
 evaluation points. Grids, initial guesses, pseudo-time steps, and tolerances
 belong to later stages. No discretizer or solver is implemented yet.
@@ -65,10 +68,14 @@ diffusion = (x, c, i) -> 0.0
 flow = (x, c, i) -> log(c)
 transition = (x, c, i, j) -> i == 1 ? 0.02 : 0.03
 
-# Boundary symbols illustrate storage, not an implemented boundary interface.
 problem = HJBProblem(discount, drift, diffusion, flow;
-    domain = (; assets = (0.0, 100.0)),
-    boundary = (; lower = :state_constraint, upper = :state_constraint),
+    domain = (; assets = (0.0, 5.0)),
+    boundary = (; assets = (
+        lower = LinearInequalityBoundary(a=-1, b=0,
+            c=(x, i) -> -inv((i == 1 ? 0.1 : 0.2) + 0.03*x)),
+        upper = LinearEqualityBoundary(a=1, b=0,
+            c=(x, i) -> inv((i == 1 ? 0.1 : 0.2) + 0.03*x)),
+    )),
     regimes = (1, 2), transition,
 )
 ```

@@ -4,8 +4,9 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** early, unregistered package. `HJBProblem` construction is implemented;
-spatial discretization and numerical solvers are not implemented yet.
+**Status:** early, unregistered package. `HJBProblem` construction and linear
+boundary definitions/evaluation are implemented; spatial discretization and
+numerical solvers are not implemented yet.
 
 ## Installation
 
@@ -31,8 +32,12 @@ drift = (x, c, i) -> (i == 1 ? 0.1 : 0.2) + 0.03 * x - c
 diffusion = (x, c, i) -> 0.0
 flow = (x, c, i) -> log(c)
 transition = (x, c, i, j) -> i == 1 ? 0.02 : 0.03
-domain = (; assets = (0.0, 100.0))
-boundary = (; assets = (lower = :state_constraint, upper = :state_constraint))
+domain = (; assets = (0.0, 5.0))
+marginal = (x, i) -> inv((i == 1 ? 0.1 : 0.2) + 0.03*x)
+boundary = (; assets = (
+    lower = LinearInequalityBoundary(a=-1, b=0, c=(x, i) -> -marginal(x, i)),
+    upper = LinearEqualityBoundary(a=1, b=0, c=marginal),
+))
 problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
                      regimes = (1, 2), transition)
 ```
@@ -46,10 +51,45 @@ It may depend on the continuous state and source-regime control. By default,
 `sigma * sigma' / 2`, not sigma itself as a variance coefficient.
 
 Inputs retain their types without copying or callback evaluation. Construction
-checks for nonempty, unique regime labels. Boundary descriptors above illustrate
-storage; numerical boundary treatment, return-shape and rate validation, and
+checks for nonempty, unique regime labels. Numerical boundary enforcement,
+component return-shape and transition-rate validation, and
 policy optimization await the spatial discretization and solver interfaces.
 See `?HJBProblem` and the [callable-struct example](examples/two_income_setup.jl).
+
+## Linear boundary conditions
+
+Attach conditions to each named domain axis using `lower` and `upper`:
+
+```julia
+boundary = (; assets = (
+    lower = LinearEqualityBoundary(a=0, b=1, c=0),  # v = 0
+    upper = LinearInequalityBoundary(a=1, b=0, c=2), # v_x <= 2
+))
+```
+
+`LinearEqualityBoundary` represents `a*v_x + b*v = c`;
+`LinearInequalityBoundary` represents `a*v_x + b*v <= c`. Coefficients can be
+finite real constants or callable structs/functions taking `(x, regime)`.
+The derivative is in the **increasing coordinate direction at both endpoints**.
+For `>=`, negate all three coefficients. A zero `a` gives a value condition;
+a zero `b` gives a derivative condition. Both cannot be zero.
+
+```julia
+condition = LinearInequalityBoundary(a=-1, b=0, c=-2) # v_x >= 2
+boundary_coefficients(condition, 0.0, 1) # (a=-1, b=0, c=-2)
+boundary_residual(condition, 0.0, 3.0; x=0.0, regime=1) # -1.0
+```
+
+A residual must be zero for an equality and nonpositive for an inequality.
+Constant coefficients are checked at construction; callable coefficients are
+checked when evaluated. These helpers evaluate the mathematical condition;
+they do not yet enforce it numerically or decide when an inequality binds.
+
+For the log-utility example, the lower condition is
+`v_x >= 1 / (income_i + r*x)`, corresponding to no borrowing under the interior
+consumption first-order condition. The upper equality imposes that marginal
+value at the truncation point `x=5`; it is an illustrative zero-saving boundary
+choice, not a general equivalence between state constraints and equalities.
 
 ## Planned workflow
 

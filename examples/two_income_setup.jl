@@ -34,14 +34,22 @@ function (rates::IncomeTransitions)(wealth, consumption, from, to)
 end
 
 function two_income_problem()
+    drift = AssetDrift(0.03, (0.1, 0.2))
+    marginal = (wealth, regime) -> inv(drift.income[regime] + drift.interest * wealth)
+    boundary = (; assets = (
+        # Log utility and no borrowing: v_x >= u'(income + r*x) at x = 0.
+        lower = LinearInequalityBoundary(a = -1, b = 0,
+                                         c = (wealth, regime) -> -marginal(wealth, regime)),
+        # Illustrative upper truncation: impose the zero-saving marginal value.
+        upper = LinearEqualityBoundary(a = 1, b = 0, c = marginal),
+    ))
     return HJBProblem(
         ConstantDiscount(0.05),
-        AssetDrift(0.03, (0.1, 0.2)),
+        drift,
         ZeroVolatility(),
         LogFlow();
-        domain = (; assets = (0.0, 100.0)),
-        # Illustrative descriptors, pending a spatial boundary interface.
-        boundary = (; lower = :state_constraint, upper = :state_constraint),
+        domain = (; assets = (0.0, 5.0)),
+        boundary,
         regimes = (1, 2),
         transition = IncomeTransitions(0.02, 0.03),
     )

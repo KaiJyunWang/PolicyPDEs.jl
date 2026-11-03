@@ -2,8 +2,8 @@
 
 PolicyPDEs is an early, unregistered Julia package. Start with docs/design.md to
 understand the intended problem -> spatial discretization -> solve workflow.
-The HJBProblem setup API is implemented; spatial discretization and numerical
-solvers are not implemented yet.
+The HJBProblem setup API and linear boundary definitions/evaluation helpers are
+implemented; spatial discretization and numerical solvers are not implemented yet.
 
 Use Julia 1.10 or newer. Clone the repository, activate its root environment,
 and run the package tests:

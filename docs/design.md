@@ -25,13 +25,58 @@ The immutable, parametrically typed container stores the four components plus
 or callback evaluation. Domain and boundary are required. Regimes must be a
 nonempty tuple or vector of unique labels; their order determines PDE ordering.
 Mutable inputs remain shared: callers must not mutate regime membership or
-ordering after setup. The domain describes a common continuous state space;
-boundary interpretation, component return shapes, and policy feasibility will
-be defined and validated by the numerical stages.
+ordering after setup. The domain describes a common continuous state space.
+Linear boundary definitions are provided below; numerical enforcement,
+component return shapes, and policy feasibility await the numerical stages.
 
-Construction does not assemble an operator or solve the equations. Examples of
-symbolic boundary descriptors demonstrate storage only. Initial guesses and
-numerical settings belong to later stages.
+Construction does not assemble an operator or solve the equations. Initial
+guesses and numerical settings belong to later stages.
+
+## Linear boundary definitions
+
+The public boundary definitions are:
+
+```julia
+LinearEqualityBoundary(a, b, c)    # a*v_x + b*v = c
+LinearInequalityBoundary(a, b, c)  # a*v_x + b*v <= c
+```
+
+Both also accept the keywords `a`, `b`, and `c`. The coefficients are finite
+real constants or user-defined callables `coefficient(x, regime)`. Their types
+are preserved. Constants are validated without evaluating user callbacks;
+evaluated coefficients must be finite real scalars with at least one of a and
+b nonzero. Coefficients are independent of the control and value function, so
+the condition remains linear in the unknown values and derivatives.
+
+Use the same axis names as the domain, with `lower` and `upper` entries:
+
+```julia
+domain = (; assets = (0.0, 5.0))
+boundary = (; assets = (
+    lower = LinearInequalityBoundary(a=-1, b=0, c=-2), # v_x >= 2
+    upper = LinearEqualityBoundary(a=1, b=1, c=3),    # v_x + v = 3
+))
+```
+
+The derivative is always with respect to the increasing axis coordinate,
+including at the lower boundary. Outward-normal conditions require the user
+to change the derivative coefficient's sign at a lower endpoint. An inequality
+uses <=; a >= condition is expressed by negating all three coefficients. No
+automatic sign normalization is performed.
+
+`boundary_coefficients(condition, x, regime)` returns the validated named tuple
+`(; a, b, c)`. `boundary_residual(condition, value, derivative; x, regime=1)`
+returns a*derivative + b*value - c. Equality residuals must be zero and inequality
+residuals nonpositive; tolerance selection belongs to the numerical solver.
+
+The two-income example uses [0,5], a lower inequality v_x >= u'(income_i + r*x)
+for log utility, and an illustrative upper equality v_x = u'(income_i + r*x).
+The lower condition follows from the interior consumption first-order condition
+and no borrowing; the upper equality is an explicit zero-saving truncation
+choice. It is not a general replacement for state constraints. Boundary
+enforcement and the active-set/complementarity treatment needed for inequalities
+remain future numerical work. Merely storing an inequality does not impose an
+equality where it is slack or establish a well-posed boundary value problem.
 
 ## Markov-switching HJB systems
 

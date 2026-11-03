@@ -6,7 +6,7 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
     drift = (x, a, i) -> 1 + 0.03 * x - a
     diffusion = (x, a, i) -> 0.0
     flow = (x, a, i) -> log(a)
-    domain = (; assets = (0.0, 100.0))
+    domain = (; assets = (0.0, 5.0))
     boundary = StateConstraints()
 
     @testset "Single equation and constructor forms" begin
@@ -20,8 +20,8 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
         end
         @test problem.regimes === (1,)
         @test problem.transition === nothing
-        @test problem.drift(10.0, 0.5, 1) ≈ 0.8
-        @test problem.flow(10.0, 1.0, 1) == 0.0
+        @test problem.drift(1.0, 0.5, 1) ≈ 0.53
+        @test problem.flow(1.0, 1.0, 1) == 0.0
     end
 
     @testset "No eager evaluation or copying" begin
@@ -92,6 +92,18 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
     @testset "Callable structs: two-income switching example" begin
         problem = @inferred two_income_problem()
         @test problem.regimes == (1, 2)
+        @test problem.domain.assets == (0.0, 5.0)
+        @test problem.boundary.assets.lower isa LinearInequalityBoundary
+        @test problem.boundary.assets.upper isa LinearEqualityBoundary
+        lower = problem.boundary.assets.lower
+        upper = problem.boundary.assets.upper
+        for (regime, income) in ((1, 0.1), (2, 0.2))
+            @test boundary_residual(lower, 0.0, inv(income); x = 0.0, regime) ≈ 0.0
+            @test boundary_residual(lower, 0.0, inv(income) + 1; x = 0.0, regime) < 0
+            @test boundary_residual(lower, 0.0, inv(income) - 1; x = 0.0, regime) > 0
+            @test boundary_residual(upper, 0.0, inv(income + 0.03 * 5.0);
+                                    x = 5.0, regime) ≈ 0.0
+        end
         @test problem.discount(1.0, 0.1, 1) == 0.05
         @test problem.drift(1.0, 0.1, 1) ≈ 0.03
         @test problem.drift(1.0, 0.1, 2) ≈ 0.13
