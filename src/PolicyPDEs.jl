@@ -1,5 +1,7 @@
 module PolicyPDEs
 
-# Write your package code here.
+export HJBProblem
+
+include("problems.jl")
 
 end

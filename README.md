@@ -4,8 +4,8 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** unregistered package scaffold. Numerical solvers are not implemented yet;
-the API below is a design proposal, not executable functionality.
+**Status:** early, unregistered package. `HJBProblem` construction is implemented;
+spatial discretization and numerical solvers are not implemented yet.
 
 ## Installation
 
@@ -16,6 +16,25 @@ using Pkg
 Pkg.add(url="https://github.com/KaiJyunWang/PolicyPDEs.jl")
 using PolicyPDEs
 ```
+
+## Problem setup
+
+An `HJBProblem` stores a user-defined model, a state domain, and explicit boundary
+data. It preserves their types without evaluating the model or copying inputs.
+
+```julia
+using PolicyPDEs
+
+model = (; discount = 0.05, interest = 0.03, income = 1.0)
+domain = (; assets = (0.0, 100.0))
+boundary = (; assets = (lower = :state_constraint, upper = :state_constraint))
+problem = HJBProblem(model; domain, boundary)
+```
+
+The descriptors above illustrate storage. A discretizer will define how to
+interpret model primitives, domains, and boundary conditions; this constructor
+does not yet enforce such an interface or check mathematical well-posedness.
+See `?HJBProblem` for the constructor contract.
 
 ## Planned workflow
 

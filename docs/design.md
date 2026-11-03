@@ -2,6 +2,26 @@
 
 This document records the intended design. Names and signatures remain provisional.
 
+## Implemented: HJBProblem
+
+`HJBProblem(model; domain, boundary)` is the problem setup API for stationary
+HJBs. The immutable, parametrically typed container exposes `model`, `domain`,
+and `boundary` fields and preserves the supplied objects without copying or
+conversion. Both keyword arguments are required, so construction never silently
+chooses a boundary condition.
+
+Users supply their own model objects without inheriting from a package type or
+adopting fixed parameter names. Model objects hold economic primitives such as
+discounting, rewards, dynamics, and admissible controls. Domain and boundary
+descriptors are also stored without interpreting them. Construction does not
+evaluate callbacks or check well-posedness; each future discretizer will define
+and validate the interfaces it supports. Mutable inputs remain shared with the
+caller. Initial guesses and numerical settings belong to later stages.
+
+Spatial discretization, model evaluation interfaces, and solvers are not yet
+implemented. Examples of named tuples or symbolic boundary descriptors only
+demonstrate problem storage, not an implemented numerical interpretation.
+
 ## Public workflow
 
 **Set up problem -> spatial discretization -> solve.**
