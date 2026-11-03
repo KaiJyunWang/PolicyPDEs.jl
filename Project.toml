@@ -1,0 +1,7 @@
+name = "PolicyPDEs"
+uuid = "2852a025-d4e1-4281-a36b-9470c8863011"
+authors = ["Kai-Jyun Wang <b11303072@ntu.edu.tw> and contributors"]
+version = "0.1.0-DEV"
+
+[compat]
+julia = "1.10"
