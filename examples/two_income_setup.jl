@@ -32,15 +32,14 @@ end
 
 function two_income_problem()
     drift = AssetDrift(0.03, [0.1, 0.2])
-    # Boundary coefficients have their own (state, regime) evaluation interface.
-    marginal = (wealth, regime) -> inv(drift.income[regime] + drift.interest * wealth)
-    boundary = (; assets = (
-        lower = LinearInequalityBoundary(a=-1, b=0, c=(x,i)->-marginal(x,i)),
-        upper = LinearEqualityBoundary(a=1, b=0, c=marginal),
-    ))
+    marginal = wealth -> inv.(drift.income .+ drift.interest * wealth)
+    boundary = RectangularBoundary(
+        lower=LinearInequalityBoundary(a=-1,b=0,c=x->-marginal(x)),
+        upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
+    )
     return HJBProblem(
         ConstantDiscount([0.05, 0.05]), drift, ZeroVolatility(), LogFlow();
-        domain=(; assets=(0.0,5.0)), boundary,
+        domain=RectangularDomain(lower=[0.0],upper=[5.0]), boundary,
         transition=IncomeTransitions(0.02,0.03),
     )
 end

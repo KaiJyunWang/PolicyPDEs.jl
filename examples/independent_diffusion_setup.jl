@@ -13,10 +13,10 @@ function independent_diffusion_problem()
                           0.1*x[2]*(1+0.01*c[1]) 0.1*x[2]*(1+0.01*c[2])],
         transition=(x,c)->[0.0 0.02*(1+0.1*x[2]+0.01*c[1]);
                            0.03*(1+0.1*x[2]+0.01*c[2]) 0.0],
-        domain=(; assets=(0.0,5.0), productivity=(0.5,1.5)),
-        boundary=(;
-            assets=(lower=LinearEqualityBoundary(1,0,0), upper=LinearEqualityBoundary(1,0,0)),
-            productivity=(lower=LinearEqualityBoundary(1,0,0), upper=LinearEqualityBoundary(1,0,0)),
+        domain=RectangularDomain(lower=[0.0,0.5],upper=[5.0,1.5]),
+        boundary=RectangularBoundary(
+            lower=(LinearEqualityBoundary(1,0,0),LinearEqualityBoundary(1,0,0)),
+            upper=(LinearEqualityBoundary(1,0,0),LinearEqualityBoundary(1,0,0)),
         ),
     )
 end

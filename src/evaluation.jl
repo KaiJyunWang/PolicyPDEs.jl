@@ -36,9 +36,10 @@ function _hjb_dimension(problem, x)
     else
         _check_hjb_vector(x, dimension, "x")
     end
-    if problem.domain isa NamedTuple && length(problem.domain) != dimension
-        throw(DimensionMismatch("x must match the number of continuous axes in domain"))
+    if length(problem.domain) != dimension
+        throw(DimensionMismatch("x must match the rectangular domain dimension"))
     end
+    x in problem.domain || throw(DomainError(x,"state lies outside the rectangular domain"))
     return dimension
 end
 
@@ -57,8 +58,8 @@ entries for finite real values, rates for nonnegativity, and transition
 diagonals for exact zero. No scalar broadcasting or squeezing of singleton
 matrix dimensions is performed.
 
-`x` is a real scalar or nonempty tuple/vector of real coordinates. A named-tuple
-domain must have the same number of axes. Control is passed unchanged; callbacks
+`x` is a real scalar or nonempty tuple/vector of real coordinates. Its dimension
+must match the rectangle and the state must lie inside its closed bounds. Control is passed unchanged; callbacks
 define its representation. See [`HJBProblem`](@ref) for ordering and conventions.
 """
 function hjb_coefficients(problem::HJBProblem, x, control)
@@ -143,4 +144,28 @@ function hjb_residual(problem::HJBProblem, x, control, values, gradient,
     _check_hjb_matrix(second_derivatives, dimension, count, "second_derivatives")
     return [_hjb_component_residual(coefficients, values, gradient, second_derivatives, i)
             for i in 1:count]
+end
+
+"""
+    boundary_residual(problem, values, gradient; x, axis, side)
+
+Evaluate all value-component residuals on one rectangular face. axis is a
+coordinate index and side is :lower or :upper. x must lie in the closed
+rectangle and on that face exactly. gradient is a d-by-m matrix; its selected
+coordinate row supplies the increasing-coordinate derivatives. At corners,
+call separately for each incident face. No PDE coefficient callbacks are
+evaluated: the component count comes from values.
+"""
+function boundary_residual(problem::HJBProblem, values, gradient; x, axis, side)
+    dimension = _hjb_dimension(problem,x)
+    axis isa Integer && 1 <= axis <= dimension ||
+        throw(ArgumentError("axis must be a coordinate index in 1:$dimension"))
+    side in (:lower,:upper) || throw(ArgumentError("side must be :lower or :upper"))
+    _check_boundary_vector(values,"values")
+    _check_hjb_matrix(gradient,dimension,length(values),"gradient")
+    point = x isa Real ? x : x[axis]
+    endpoint = getproperty(problem.domain,side)[axis]
+    point == endpoint || throw(ArgumentError("x must lie on the selected rectangular face"))
+    condition = getproperty(problem.boundary,side)[axis]
+    return boundary_residual(condition,values,view(gradient,axis,:);x)
 end

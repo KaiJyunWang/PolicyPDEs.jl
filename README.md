@@ -4,13 +4,13 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** problem setup, fixed-control HJB coefficient/residual evaluation,
-and linear boundary definitions/evaluation are implemented. Spatial
-discretization and numerical solvers are not implemented yet.
+**Status:** rectangular problem setup, fixed-control HJB evaluation, and linear
+face boundary evaluation are implemented. Spatial discretization and numerical
+solvers are not implemented yet.
 
 ## Installation
 
-Requires Julia 1.10 or newer. Install directly from GitHub:
+Requires Julia 1.10 or newer:
 
 ```julia
 using Pkg
@@ -18,143 +18,123 @@ Pkg.add(url="https://github.com/KaiJyunWang/PolicyPDEs.jl")
 using PolicyPDEs
 ```
 
-## Vector-valued problem setup
+## Rectangular domains and faces
 
-The unknown is `v: R^d -> R^m`, with `d` continuous coordinates and `m`
-CTMC states. Only continuous coordinates belong in `domain`. The component count
-`m` is inferred from the nonempty vector returned by `discount(x, control)`;
-all other outputs use the same positional ordering. No component labels or
-separate count are required.
-
-Every HJB primitive takes **`(x, control)`**, returning all discrete components
-at once. User-defined callable structs and ordinary functions are supported.
-
-| Primitive | Output shape | Entry meaning |
-|---|---|---|
-| `discount` | length `m` | `rho[i]` |
-| `flow` | length `m` | `u[i]` |
-| `drift` | `d × m` | coordinate `k`, regime `i` |
-| `diffusion` | `d × m` | coordinate volatility `sigma[k,i]` |
-| `transition` | `m × m` | intensity from row `i` to column `j` |
-
-The transition diagonal must be zero. This is an off-diagonal rate matrix,
-with the generator diagonal derived from outgoing rates. `transition=nothing`
-means zero switching. The volatility matrix's columns index regimes; each
-continuous coordinate has an independent Brownian shock. There are no mixed
-second derivatives. Shapes stay explicit even for `d=1` or `m=1`.
+Supply a lower and upper bound for each continuous coordinate:
 
 ```julia
-using PolicyPDEs
-
-discount = (x,c) -> [0.05, 0.05]
-flow = (x,c) -> log.(c)
-drift = (x,c) -> reshape([0.1,0.2] .+ 0.03*x .- c, 1, 2)
-diffusion = (x,c) -> zeros(1,2)
-transition = (x,c) -> [0.0 0.02; 0.03 0.0]
-domain = (; assets=(0.0,5.0))
-
-# Boundary coefficient callbacks have a separate (x, regime) interface.
-marginal = (x,i) -> inv([0.1,0.2][i] + 0.03*x)
-boundary = (; assets=(
-    lower=LinearInequalityBoundary(a=-1,b=0,c=(x,i)->-marginal(x,i)),
-    upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
-))
-problem = HJBProblem(;discount,drift,diffusion,flow,domain,boundary,
-                     transition)
+domain = RectangularDomain(lower=[0.0,0.5], upper=[5.0,1.5])
+boundary = RectangularBoundary(
+    lower=(LinearInequalityBoundary(-1,0,-2), LinearEqualityBoundary(1,0,0)),
+    upper=(LinearEqualityBoundary(1,0,0), LinearEqualityBoundary(0,1,0)),
+)
 ```
 
-Callbacks must keep the same nonzero component count across states and controls.
-The control is passed unchanged. In this example `c=[c_low,c_high]` holds a
-control for each regime. Callbacks may instead define structured or shared
-candidate controls. For row-wise policy improvement, coefficient column `i`,
-discount/flow entry `i`, and transition row `i` depend on source control
-`c_i`. All five primitives may depend on continuous state and control.
+This describes `[0,5] × [0.5,1.5]`. Bounds must be finite and strictly ordered.
+Bounds are stored as tuples, taking snapshots of input vectors.
+`length(domain)` gives the continuous dimension; `x in domain` includes faces
+and corners. Scalars may specify a one-dimensional interval.
 
-See the [callable-struct example](examples/two_income_setup.jl) and the
+`boundary.lower[k]` applies on `x[k]=domain.lower[k]`, and
+`boundary.upper[k]` applies on `x[k]=domain.upper[k]`. There must be one
+condition for each of the 2d faces. In one dimension, a single condition per
+side is accepted without wrapping it in a tuple.
+
+## Vector-valued HJB primitives
+
+The unknown is `v: R^d -> R^m`. CTMC states index output components.
+Every primitive is a callable struct/function of **`(x, control)`**, returning
+all components at once:
+
+| Primitive | Output shape | Meaning |
+|---|---|---|
+| `discount` | length m vector/tuple | discount rates |
+| `flow` | length m vector/tuple | instantaneous payoffs |
+| `drift` | d × m matrix | coordinate row, component column |
+| `diffusion` | d × m matrix | independent-coordinate volatilities |
+| `transition` | m × m matrix | source row, destination column |
+
+The nonzero component count m is inferred from discount. All other shapes must
+agree; callbacks must keep the same m across states/controls. Transition
+diagonals are zero; the generator diagonal is derived from outgoing rates.
+`transition=nothing` means no switching. Independent coordinate diffusion
+uses sigma[k,i]^2/2 on the pure second derivative, with no mixed derivatives.
+Shapes remain explicit when d=1 or m=1.
+
+```julia
+discount = (x,c)->[0.05,0.05]
+flow = (x,c)->log.(c)
+drift = (x,c)->reshape([0.1,0.2] .+ 0.03*x .- c,1,2)
+diffusion = (x,c)->zeros(1,2)
+transition = (x,c)->[0.0 0.02;0.03 0.0]
+domain = RectangularDomain(lower=[0.0],upper=[5.0])
+marginal = x->inv.([0.1,0.2] .+ 0.03*x)
+boundary = RectangularBoundary(
+    lower=LinearInequalityBoundary(a=-1,b=0,c=x->-marginal(x)),
+    upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
+)
+problem = HJBProblem(;discount,drift,diffusion,flow,domain,boundary,transition)
+```
+
+Controls pass unchanged. Here a two-entry vector holds one control per component.
+Source-i coefficient entries/columns and transition row i should depend on
+source control i for row-wise policy improvement. All five primitives may
+depend on continuous state and control. See the
+[callable-struct example](examples/two_income_setup.jl) and
 [two-coordinate example](examples/independent_diffusion_setup.jl).
 
-## Evaluating all equations together
+## Evaluating the equations and boundaries
 
 ```julia
-control = [1.0,1.0]
-coefficients = hjb_coefficients(problem,1.0,control)
-residuals = hjb_residual(problem,1.0,control,[1.0,3.0],zeros(1,2),zeros(1,2))
+coefficients = hjb_coefficients(problem,1.0,[1.0,1.0])
+residuals = hjb_residual(problem,1.0,[1.0,1.0],[1.0,3.0],zeros(1,2),zeros(1,2))
 # approximately [-0.01,-0.21]
+
+boundary_residual(problem,[0.0,0.0],reshape([10.0,5.0],1,2);
+                  x=0.0,axis=1,side=:lower) # [0.0,0.0]
 ```
 
-`hjb_coefficients` evaluates all five callbacks once and validates their shapes
-and finite real entries, including nonnegative off-diagonal rates.
-`hjb_residual` returns a length-`m` vector, using a length-`m` value vector
-and `d × m` first-derivative and pure-second-derivative matrices.
-Entry `[k,i]` refers to continuous coordinate `k` of value component `i`.
+Each HJB primitive is called once. Coefficient evaluation checks shapes and finite
+real values, including nonnegative off-diagonal rates. State points must lie
+in the closed rectangle. Residual inputs are a length-m value vector/tuple and
+d-by-m matrices of first and pure second coordinate derivatives.
 
-For fixed controls, component `i` is RHS minus LHS:
+`LinearEqualityBoundary(a,b,c)` defines
+`a[i]*partial_k(v_i)+b[i]*v_i=c[i]`, and `LinearInequalityBoundary` uses <=.
+Each coefficient may be a finite real scalar (broadcast to all components),
+a vector/tuple, or a callable `coefficient(x)` returning a scalar/vector/tuple.
+No boundary callback needs a discrete input. At least one of a[i],b[i] must be
+nonzero. The derivative is in the increasing coordinate direction at both
+faces; negate a on lower faces when expressing an outward-normal condition.
+For >=, negate all three coefficients.
 
-```text
-u[i] - rho[i]*v[i]
-  + sum(mu[k,i]*partial_k(v_i) + sigma[k,i]^2*partial_kk(v_i)/2 for k in 1:d)
-  + sum(rates[i,j]*(v[j]-v[i]) for j != i).
-```
+`boundary_coefficients(condition,x;ncomponents=m)` evaluates one face.
+`boundary_residual(condition,values,derivatives;x)` evaluates that face from
+vectors of values and its coordinate derivatives. The problem overload above
+selects the face, extracts the gradient row, and checks that x lies on the face.
+Residuals must be zero for equalities and nonpositive for inequalities.
+At corners, evaluate each incident face separately. Coefficient validation does
+not establish corner compatibility or enforce the condition numerically.
 
-The Bellman equation maximizes each complete residual over feasible source
-controls, including control-dependent discounting. Switching preserves the
-continuous state. The evaluation helpers do not differentiate, optimize,
-assemble a grid, or solve a PDE.
-
-## Linear boundary conditions
-
-Attach conditions to each named domain axis using `lower` and `upper`:
-
-```julia
-boundary = (; assets = (
-    lower = LinearEqualityBoundary(a=0, b=1, c=0),  # v = 0
-    upper = LinearInequalityBoundary(a=1, b=0, c=2), # v_x <= 2
-))
-```
-
-`LinearEqualityBoundary` represents `a*v_x + b*v = c`;
-`LinearInequalityBoundary` represents `a*v_x + b*v <= c`. Coefficients can be
-finite real constants or callable structs/functions taking `(x, regime)`.
-The derivative is in the **increasing coordinate direction at both endpoints**.
-For `>=`, negate all three coefficients. A zero `a` gives a value condition;
-a zero `b` gives a derivative condition. Both cannot be zero.
-
-```julia
-condition = LinearInequalityBoundary(a=-1, b=0, c=-2) # v_x >= 2
-boundary_coefficients(condition, 0.0, 1) # (a=-1, b=0, c=-2)
-boundary_residual(condition, 0.0, 3.0; x=0.0, regime=1) # -1.0
-```
-
-A residual must be zero for an equality and nonpositive for an inequality.
-Constant coefficients are checked at construction; callable coefficients are
-checked when evaluated. These helpers evaluate the mathematical condition;
-they do not yet enforce it numerically or decide when an inequality binds.
-
-For the log-utility example, the lower condition is
-`v_x >= 1 / (income_i + r*x)`, corresponding to no borrowing under the interior
-consumption first-order condition. The upper equality imposes that marginal
-value at the truncation point `x=5`; it is an illustrative zero-saving boundary
-choice, not a general equivalence between state constraints and equalities.
+The example's lower inequality expresses the log-utility no-borrowing marginal
+condition. Its upper equality is an illustrative zero-saving truncation choice.
+The fixed-control HJB residual is RHS minus LHS, including switching gains.
+The Bellman equation maximizes each complete residual over feasible controls,
+including the discount term when discounting depends on control. Evaluation
+does not differentiate, optimize, discretize, or solve a PDE.
 
 ## Planned workflow
 
-Set up the economic problem, discretize space, then solve:
-
 ```julia
-# Spatial discretization and solve API are proposed, not implemented yet.
-problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
-                     transition)
-discrete = discretize(problem, grid, UpwindFiniteDifference())
-solution = solve(discrete, SemiImplicit(dt=Inf); initial_value)
-
-forward_problem = forward(discrete, solution.policy)
-distribution = solve(forward_problem, StationaryDistribution())
+# Spatial discretization and solving are proposed APIs.
+discrete = discretize(problem,grid,UpwindFiniteDifference())
+solution = solve(discrete,SemiImplicit(dt=Inf);initial_value)
+forward_problem = forward(discrete,solution.policy)
+distribution = solve(forward_problem,StationaryDistribution())
 ```
 
-The backward solver will use semi-implicit pseudo-time iteration. Finite `dt`
-regularizes the policy-conditioned linear solve; `dt = Inf` gives Howard iteration.
-The forward API will support stationary distributions and transient evolution
-under a fixed policy, sharing the backward problem's spatial discretization.
+Finite pseudo-time steps regularize policy evaluation; dt=Inf gives Howard
+iteration. The forward API will reuse the policy-conditioned spatial generator.
 
 See [the design plan](docs/design.md), [contributing](CONTRIBUTING.md), and
 [the registration checklist](docs/registration.md).

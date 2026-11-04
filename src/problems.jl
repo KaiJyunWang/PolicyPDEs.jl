@@ -27,7 +27,7 @@ All five user-defined primitives are callable structs or functions of
 
 Vectors must retain length `m` and matrices their stated shapes even when
 `d=1` or `m=1`; tuples are also accepted for the vector outputs. Continuous
-coordinates follow domain-axis order; value entries, coefficient columns,
+coordinates follow the order of the domain bounds; value entries, coefficient columns,
 and transition rows/columns use the same component ordering. The component
 count `m` is inferred from `length(discount(x, control))` during evaluation.
 
@@ -47,11 +47,12 @@ and optimization belong to the future solver. Control-dependent discounting
 stays inside the maximization of the complete residual.
 
 Use a scalar continuous state in one dimension or a tuple/vector in multiple
-dimensions. `domain` and `boundary` are required; linear boundary conditions
-use axis-keyed named tuples with `lower` and `upper` entries. Their coefficient
-callback interface remains `(x, regime)`; it is separate from HJB primitives.
+dimensions. `domain` must be a [`RectangularDomain`](@ref) with lower/upper
+bounds. `boundary` must be a [`RectangularBoundary`](@ref) with one condition
+per lower and upper coordinate face. Their dimensions must match. Face
+coefficient callbacks take only `x` and return all components together.
 
-Construction stores inputs without copying or evaluating callbacks. It does not
+Construction validates the rectangle/face dimension match without evaluating callbacks. It does not
 store component labels or a component count. Mutable inputs remain shared.
 Callbacks must keep the same nonzero component count across states and controls.
 [`hjb_coefficients`](@ref) validates evaluated shapes, finite values, and rates.
@@ -67,11 +68,11 @@ problem = HJBProblem(;
     drift = (x, c) -> reshape([0.1, 0.2] .+ 0.03*x .- c, 1, 2),
     diffusion = (x, c) -> zeros(1, 2),
     transition = (x, c) -> [0.0 0.02; 0.03 0.0],
-    domain = (; assets = (0.0, 5.0)),
-    boundary = (; assets = (
-        lower = LinearEqualityBoundary(1, 0, 0),
-        upper = LinearEqualityBoundary(1, 0, 0),
-    )),
+    domain = RectangularDomain(lower=[0.0], upper=[5.0]),
+    boundary = RectangularBoundary(
+        lower=LinearEqualityBoundary(1,0,0),
+        upper=LinearEqualityBoundary(1,0,0),
+    ),
 )
 ```
 """
@@ -83,6 +84,18 @@ struct HJBProblem{R,M,S,F,D,B,Q}
     domain::D
     boundary::B
     transition::Q
+
+    function HJBProblem(discount,drift,diffusion,flow,domain,boundary,transition)
+        domain isa RectangularDomain ||
+            throw(ArgumentError("domain must be a RectangularDomain"))
+        boundary isa RectangularBoundary ||
+            throw(ArgumentError("boundary must be a RectangularBoundary"))
+        length(domain) == length(boundary) ||
+            throw(DimensionMismatch("domain dimension must match lower/upper boundary face counts"))
+        return new{typeof(discount),typeof(drift),typeof(diffusion),typeof(flow),
+                   typeof(domain),typeof(boundary),typeof(transition)}(
+            discount,drift,diffusion,flow,domain,boundary,transition)
+    end
 end
 
 function HJBProblem(discount, drift, diffusion, flow; domain, boundary,

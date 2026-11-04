@@ -2,7 +2,7 @@ include(joinpath(@__DIR__,"..","examples","independent_diffusion_setup.jl"))
 
 @testset "Bulk HJB coefficient and residual evaluation" begin
     @testset "Two-coordinate setup example" begin
-        problem=@inferred independent_diffusion_problem()
+        problem=independent_diffusion_problem()
         control=[0.5,0.5]
         coefficients=@inferred hjb_coefficients(problem,(1.0,1.0),control)
         @test coefficients.discount ≈ [0.056,0.056]
@@ -18,7 +18,7 @@ include(joinpath(@__DIR__,"..","examples","independent_diffusion_setup.jl"))
             diffusion=(x,c)->[k==1 ? 0.2*x[1] : 0.1*(c[i]+i) for k in 1:2,i in 1:3],
             flow=(x,c)->[x[1]+2*x[2]+c[i]+i for i in 1:3],
             transition=(x,c)->[i==j ? 0.0 : 0.1*(x[1]+c[i]+i) for i in 1:3,j in 1:3],
-            domain=(;asset=(0,5),productivity=(0,3)),boundary=nothing)
+            domain=RectangularDomain([0,0],[5,3]),boundary=test_boundary(2))
         x=(1.0,2.0)
         c=[0.5,0.5,0.5]
         v=x->[x[1]^2+3*x[2]^2+2*(i-1) for i in 1:3]
@@ -65,13 +65,13 @@ include(joinpath(@__DIR__,"..","examples","independent_diffusion_setup.jl"))
         callbacks=((x,c)->(1//2,), (x,c)->reshape([0],1,1),
                    (x,c)->reshape([0],1,1), (x,c)->[1])
         for transition in (nothing,(x,c)->zeros(1,1))
-            problem=HJBProblem(callbacks...;domain=(;asset=(0,5)),boundary=nothing,transition)
+            problem=HJBProblem(callbacks...;domain=RectangularDomain(0,5),boundary=test_boundary(1),transition)
             coefficients=hjb_coefficients(problem,1,nothing)
             @test coefficients.discount === (1//2,)
             @test hjb_residual(problem,1,nothing,(2,),zeros(1,1),zeros(1,1)) == [0]
         end
         scalar_control=HJBProblem((x,c)->[0,0],(x,c)->zeros(1,2),(x,c)->zeros(1,2),
-            (x,c)->[c,c^2];domain=(;asset=(0,5)),boundary=nothing)
+            (x,c)->[c,c^2];domain=RectangularDomain(0,5),boundary=test_boundary(1))
         @test hjb_residual(scalar_control,1,2,[0,0],zeros(1,2),zeros(1,2)) == [2,4]
     end
 
@@ -79,7 +79,7 @@ include(joinpath(@__DIR__,"..","examples","independent_diffusion_setup.jl"))
         make_problem(;discount=(x,c)->[0.05,0.05],drift=(x,c)->zeros(2,2),
                      diffusion=(x,c)->[0.2 0.2;0.3 0.3],flow=(x,c)->[1,1],
                      transition=nothing)=HJBProblem(discount,drift,diffusion,flow;
-            domain=(;asset=(0,5),productivity=(0,3)),boundary=nothing,transition)
+            domain=RectangularDomain([0,0],[5,3]),boundary=test_boundary(2),transition)
         x=[1.0,2.0]
         @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c)->[0.2,0.3]),x,1)
         @test_throws DimensionMismatch hjb_coefficients(make_problem(diffusion=(x,c)->zeros(2,3)),x,1)
