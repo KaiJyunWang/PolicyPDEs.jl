@@ -1,7 +1,7 @@
 """
-    HJBProblem(discount, drift, diffusion, flow; domain, boundary,
+    HJBProblem(discount, drift, diffusion, flow; control, domain, boundary,
                transition=nothing)
-    HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
+    HJBProblem(; discount, drift, diffusion, flow, control, domain, boundary,
                transition=nothing)
 
 Describe a stationary vector-valued HJB `v: R^d -> R^m` with independent
@@ -38,13 +38,22 @@ For a supplied control, component `i` has residual
             + diffusion[k,i]^2 * partial_kk(v_i) / 2 for k in 1:d)
       + sum(transition[i,j] * (v[j] - v[i]) for j != i).
 
-The control is passed unchanged to every callback. A vector can contain one
-control per regime, or a matrix can hold several controls per regime. For
-row-wise policy improvement, output component/column `i` and transition row
-`i` should depend on the source regime's control only. A shared candidate
-control is also possible if the callbacks implement it. Control feasibility
-and optimization belong to the future solver. Control-dependent discounting
-stays inside the maximization of the complete residual.
+The required `control(values, gradient, second_derivatives, x)` callback
+returns an `AbstractVector` of finite real controls. Values have length m;
+gradient and pure second derivatives have shape d-by-m. No mixed derivatives
+are supplied in the independent-coordinate diffusion case. All arguments must
+be treated as read-only. The callback is not called during construction.
+
+[`update_control`](@ref) validates inputs and the returned vector, preserving
+its identity/type. Control-vector length/layout is model-defined; one scalar
+per value component is common, and multiple controls can use a documented
+flattened layout. There is no imposed equality between control count and m.
+The vector passes unchanged to the economic primitives. For row-wise policy
+improvement, source-i coefficients and outgoing rates depend on source control
+i. The user implements feasible, greedy policy improvement, including
+control-dependent discount and transition terms. The package validates the
+data, not feasibility or optimality. Control-dependent discounting stays inside
+the complete residual maximization.
 
 Use a scalar continuous state in one dimension or a tuple/vector in multiple
 dimensions. `domain` must be a [`RectangularDomain`](@ref) with lower/upper
@@ -56,13 +65,15 @@ Construction validates the rectangle/face dimension match without evaluating cal
 store component labels or a component count. Mutable inputs remain shared.
 Callbacks must keep the same nonzero component count across states and controls.
 [`hjb_coefficients`](@ref) validates evaluated shapes, finite values, and rates.
-[`hjb_residual`](@ref) evaluates all value components from supplied derivatives.
+[`hjb_residual`](@ref) evaluates all value components from supplied derivatives,
+with either explicit controls or controls returned by the callback.
 No spatial discretizer or PDE solver is implemented yet.
 
 # Example
 
 ```julia
 problem = HJBProblem(;
+    control = (v, Dv, D2v, x) -> inv.(Dv[1,:]), # log-utility interior rule
     discount = (x, c) -> [0.05, 0.05],
     flow = (x, c) -> log.(c),
     drift = (x, c) -> reshape([0.1, 0.2] .+ 0.03*x .- c, 1, 2),
@@ -76,34 +87,35 @@ problem = HJBProblem(;
 )
 ```
 """
-struct HJBProblem{R,M,S,F,D,B,Q}
+struct HJBProblem{R,M,S,F,C,D,B,Q}
     discount::R
     drift::M
     diffusion::S
     flow::F
+    control::C
     domain::D
     boundary::B
     transition::Q
 
-    function HJBProblem(discount,drift,diffusion,flow,domain,boundary,transition)
+    function HJBProblem(discount,drift,diffusion,flow,control,domain,boundary,transition)
         domain isa RectangularDomain ||
             throw(ArgumentError("domain must be a RectangularDomain"))
         boundary isa RectangularBoundary ||
             throw(ArgumentError("boundary must be a RectangularBoundary"))
         length(domain) == length(boundary) ||
             throw(DimensionMismatch("domain dimension must match lower/upper boundary face counts"))
-        return new{typeof(discount),typeof(drift),typeof(diffusion),typeof(flow),
+        return new{typeof(discount),typeof(drift),typeof(diffusion),typeof(flow),typeof(control),
                    typeof(domain),typeof(boundary),typeof(transition)}(
-            discount,drift,diffusion,flow,domain,boundary,transition)
+            discount,drift,diffusion,flow,control,domain,boundary,transition)
     end
 end
 
-function HJBProblem(discount, drift, diffusion, flow; domain, boundary,
+function HJBProblem(discount, drift, diffusion, flow; control, domain, boundary,
                     transition = nothing)
-    return HJBProblem(discount, drift, diffusion, flow, domain, boundary, transition)
+    return HJBProblem(discount, drift, diffusion, flow, control, domain, boundary, transition)
 end
 
-function HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
+function HJBProblem(; discount, drift, diffusion, flow, control, domain, boundary,
                     transition = nothing)
-    return HJBProblem(discount, drift, diffusion, flow; domain, boundary, transition)
+    return HJBProblem(discount, drift, diffusion, flow; control, domain, boundary, transition)
 end

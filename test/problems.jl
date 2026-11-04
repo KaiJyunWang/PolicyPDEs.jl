@@ -5,14 +5,15 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
     drift=(x,c)->reshape([1+0.03*x-c[1]],1,1)
     diffusion=(x,c)->zeros(1,1)
     flow=(x,c)->log.(c)
+    control=test_control
     domain=RectangularDomain([0.0],[5.0])
     boundary=test_boundary(1)
 
     @testset "Constructor forms and preserved callback types" begin
-        problem=@inferred HJBProblem(discount,drift,diffusion,flow;domain,boundary)
-        other=@inferred HJBProblem(;discount,drift,diffusion,flow,domain,boundary)
+        problem=@inferred HJBProblem(discount,drift,diffusion,flow;control,domain,boundary)
+        other=@inferred HJBProblem(;discount,drift,diffusion,flow,control,domain,boundary)
         @test typeof(problem) === typeof(other)
-        for name in (:discount,:drift,:diffusion,:flow,:domain,:boundary,:transition)
+        for name in (:discount,:drift,:diffusion,:flow,:control,:domain,:boundary,:transition)
             @test getproperty(problem,name) === getproperty(other,name)
         end
         @test problem.transition === nothing
@@ -26,6 +27,7 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
         stored_domain=RectangularDomain(lower,[5])
         stored_boundary=test_boundary(1)
         problem=HJBProblem(component,component,component,component;
+            control=(v,Dv,D2v,x)->(calls[]+=1;error("control must remain lazy")),
             domain=stored_domain,boundary=stored_boundary,transition=component)
         @test calls[] == 0
         for name in (:discount,:drift,:diffusion,:flow,:transition)
@@ -38,22 +40,24 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
     end
 
     @testset "Required inputs and geometry validation" begin
+        @test_throws UndefKeywordError HJBProblem(discount,drift,diffusion,flow;domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(;discount,drift,diffusion,flow,domain,boundary)
         @test_throws ArgumentError HJBProblem(discount,drift,diffusion,flow;
-                                              domain=(;asset=(0,5)),boundary)
-        @test_throws ArgumentError HJBProblem(discount,drift,diffusion,flow;domain,boundary=nothing)
+                                              control,domain=(;asset=(0,5)),boundary)
+        @test_throws ArgumentError HJBProblem(discount,drift,diffusion,flow;control,domain,boundary=nothing)
         @test_throws DimensionMismatch HJBProblem(discount,drift,diffusion,flow;
-            domain=RectangularDomain([0,0],[5,3]),boundary)
+            control,domain=RectangularDomain([0,0],[5,3]),boundary)
 
         @test_throws MethodError HJBProblem(discount,drift,diffusion,flow;
-                                            domain,boundary,regimes=(1,2))
-        @test_throws UndefKeywordError HJBProblem(;domain,boundary)
-        @test_throws UndefKeywordError HJBProblem(;discount,drift,diffusion,domain,boundary)
-        @test_throws UndefKeywordError HJBProblem(;discount,drift,flow,domain,boundary)
-        @test_throws UndefKeywordError HJBProblem(;discount,diffusion,flow,domain,boundary)
-        @test_throws UndefKeywordError HJBProblem(;drift,diffusion,flow,domain,boundary)
-        @test_throws UndefKeywordError HJBProblem(discount,drift,diffusion,flow;domain)
+                                            control,domain,boundary,regimes=(1,2))
+        @test_throws UndefKeywordError HJBProblem(;control,domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(;discount,drift,diffusion,control,domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(;discount,drift,flow,control,domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(;discount,diffusion,flow,control,domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(;drift,diffusion,flow,control,domain,boundary)
+        @test_throws UndefKeywordError HJBProblem(discount,drift,diffusion,flow;control,domain)
         @test_throws UndefKeywordError HJBProblem(discount,drift,diffusion,flow;boundary)
-        @test_throws MethodError HJBProblem(discount,drift,diffusion,flow;domain,boundary,dt=Inf)
+        @test_throws MethodError HJBProblem(discount,drift,diffusion,flow;control,domain,boundary,dt=Inf)
     end
 
     @testset "Callable structs: two-income setup on [0,5]" begin

@@ -64,7 +64,7 @@ end
         @test_throws ArgumentError RectangularBoundary((),())
         @test_throws ArgumentError RectangularBoundary((:placeholder,),upper[1])
         bomb=(args...)->error("boundary evaluation must not evaluate HJB primitives")
-        problem=HJBProblem(bomb,bomb,bomb,bomb;
+        problem=HJBProblem(bomb,bomb,bomb,bomb;control=bomb,
                            domain=RectangularDomain([0,0],[5,2]),boundary)
         @test boundary_residual(problem,[4,5],[3 4;0 0];x=(0,1),axis=1,side=:lower) == [-1,-1]
         @test boundary_residual(problem,[4,5],[0 0;0 0];x=(1,0),axis=2,side=:lower) == [0,0]

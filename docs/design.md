@@ -4,7 +4,7 @@
 
 Problem setup describes economic primitives, a rectangular continuous domain,
 and lower/upper face conditions. Spatial discretization will own grids, derivative
-operators, boundary enforcement, and assembly. The solver will own policy updates,
+operators, boundary enforcement, and assembly. The solver will invoke user-supplied policy updates and own iteration,
 initial guesses, pseudo-time steps, tolerances, linear solves, and diagnostics.
 Only setup and pointwise equation/boundary evaluation are implemented so far.
 
@@ -27,8 +27,8 @@ against the domain dimension, without evaluating user callbacks.
 ## Bulk HJB primitives
 
 ```julia
-HJBProblem(discount,drift,diffusion,flow;domain,boundary,transition=nothing)
-HJBProblem(;discount,drift,diffusion,flow,domain,boundary,transition=nothing)
+HJBProblem(discount,drift,diffusion,flow;control,domain,boundary,transition=nothing)
+HJBProblem(;discount,drift,diffusion,flow,control,domain,boundary,transition=nothing)
 ```
 
 The unknown is v: R^d -> R^m. All HJB primitives use (x,control), with no
@@ -67,6 +67,35 @@ For fixed controls, component i is
 The Bellman maximum includes the entire residual, including control-dependent
 discounting. These helpers do not differentiate, optimize, or solve a PDE.
 CTMC switching preserves x.
+
+## User-supplied control update
+
+HJBProblem requires a callable `control(v,Dv,D2v,x)`. It is stored with its
+concrete type and is not evaluated at construction. v is a nonempty vector/tuple;
+Dv and D2v are d-by-m matrices of first and pure second derivatives. Mixed
+partials are not supplied for the initial independent-coordinate diffusion class.
+The callback must treat arguments as read-only and return an AbstractVector
+of finite real controls, without a discrete-state argument. Length/layout is
+model-defined; multiple controls may use a documented flattened ordering.
+The returned vector is passed unchanged to the economic primitives.
+
+`update_control(problem,x,v,Dv,D2v)` checks geometry/input dimensions and calls
+the callback once. It validates the vector result without copying/conversion
+or calling HJB coefficient functions. This avoids circular dependence on
+control-dependent discounting when determining a policy. Scalar, tuple, matrix,
+nonreal, or nonfinite outputs are rejected.
+
+`hjb_residual(problem,x,v,Dv,D2v)` updates controls and delegates to the existing
+explicit-control residual evaluator. This is the Bellman residual only if the
+user actually supplies a feasible maximizer; validation does not certify that.
+Row-wise maximization must account for the complete residual, including effects
+on discount, volatility, and transition rates. The solver iteration engine and
+numerical differentiation remain future work.
+
+The log-consumption example supplies a callable struct using inverse marginal
+value and enforcing endpoint consumption feasibility. The two-coordinate
+example supplies a maximizer over consumption candidates 0.1:0.1:1.0, using
+values, both derivatives, state-dependent coefficients, and CTMC gains.
 
 ## Componentwise linear face conditions
 

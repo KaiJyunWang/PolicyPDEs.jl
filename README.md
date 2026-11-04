@@ -4,8 +4,8 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** rectangular problem setup, fixed-control HJB evaluation, and linear
-face boundary evaluation are implemented. Spatial discretization and numerical
+**Status:** rectangular problem setup, user-supplied policy updates, HJB residual
+evaluation, and linear face boundary evaluation are implemented. Spatial discretization and numerical
 solvers are not implemented yet.
 
 ## Installation
@@ -73,15 +73,51 @@ boundary = RectangularBoundary(
     lower=LinearInequalityBoundary(a=-1,b=0,c=x->-marginal(x)),
     upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
 )
-problem = HJBProblem(;discount,drift,diffusion,flow,domain,boundary,transition)
+control = (v,Dv,D2v,x)->begin
+    marginal = Dv[1,:]
+    all(g->g>0,marginal) || throw(DomainError(marginal,"positive marginal values required"))
+    consumption = inv.(marginal)
+    resources = [0.1,0.2] .+ 0.03*x
+    x == domain.lower[1] && return min.(consumption,resources)
+    x == domain.upper[1] && return max.(consumption,resources)
+    consumption
+end
+problem = HJBProblem(;discount,drift,diffusion,flow,control,domain,boundary,transition)
 ```
 
-Controls pass unchanged. Here a two-entry vector holds one control per component.
+`control` is required and is not evaluated during construction. Here its vector
+contains one consumption choice per value component; all coefficient callbacks
+receive that returned vector unchanged.
 Source-i coefficient entries/columns and transition row i should depend on
 source control i for row-wise policy improvement. All five primitives may
 depend on continuous state and control. See the
 [callable-struct example](examples/two_income_setup.jl) and
 [two-coordinate example](examples/independent_diffusion_setup.jl).
+
+## Updating controls from values and derivatives
+
+```julia
+values = [1.0,3.0]
+Dv = [2.0 4.0]
+D2v = zeros(1,2)
+controls = update_control(problem,1.0,values,Dv,D2v) # [0.5,0.25]
+residuals = hjb_residual(problem,1.0,values,Dv,D2v)  # invokes the callback
+```
+
+The callback signature is `control(v,Dv,D2v,x)`: v has length m and both
+derivative inputs have shape d-by-m. D2v contains pure second coordinate
+derivatives for the independent-diffusion equation, not full Hessians.
+Treat inputs as read-only. The result must be an AbstractVector of finite
+real controls; scalars, tuples, and matrices are rejected. Control length/layout
+is model-defined and may differ from the number of value components.
+The helper preserves the returned vector without copying or conversion.
+
+Users implement feasible, greedy policy improvement, including all effects
+of control on discounting, drift, diffusion, flow, and CTMC rates. The package
+checks data shapes and finiteness, not economic feasibility or optimality.
+`update_control` does not evaluate the coefficient callbacks.
+The residual overload above calls it once, then evaluates the supplied policy.
+The two-coordinate example supplies an explicit bounded-grid maximizer.
 
 ## Evaluating the equations and boundaries
 
@@ -120,8 +156,9 @@ The example's lower inequality expresses the log-utility no-borrowing marginal
 condition. Its upper equality is an illustrative zero-saving truncation choice.
 The fixed-control HJB residual is RHS minus LHS, including switching gains.
 The Bellman equation maximizes each complete residual over feasible controls,
-including the discount term when discounting depends on control. Evaluation
-does not differentiate, optimize, discretize, or solve a PDE.
+including the discount term when discounting depends on control. The package
+does not compute derivatives or provide a built-in optimizer, spatial discretizer,
+or PDE solver; any policy optimization is supplied by the control callback.
 
 ## Planned workflow
 

@@ -169,3 +169,54 @@ function boundary_residual(problem::HJBProblem, values, gradient; x, axis, side)
     condition = getproperty(problem.boundary,side)[axis]
     return boundary_residual(condition,values,view(gradient,axis,:);x)
 end
+
+"""
+    update_control(problem, x, values, gradient, second_derivatives)
+
+Evaluate `problem.control(values, gradient, second_derivatives, x)` once and
+return its control vector without copying or conversion. The callback may be
+a function or user-defined callable struct.
+
+Check x against the rectangle, values as a nonempty length-m vector/tuple,
+and gradient/second_derivatives as d-by-m matrices of finite real entries.
+The second derivatives are the pure coordinate partials, not full Hessians.
+Inputs are passed unchanged and must be treated as read-only by the callback.
+No HJB coefficient callback is evaluated, avoiding circular dependence between
+control and control-dependent discounting.
+
+The result must be an AbstractVector with one-based indexing and finite real
+entries. Scalars, tuples, matrices, and nonfinite/nonreal controls are rejected.
+Its length/layout is model-defined and may differ from m. The callback must
+supply a feasible, greedy control; those economic properties are not checked.
+"""
+function update_control(problem::HJBProblem, x, values, gradient, second_derivatives)
+    dimension = _hjb_dimension(problem,x)
+    values isa Union{Tuple,AbstractVector} ||
+        throw(ArgumentError("values must be a nonempty vector or tuple"))
+    count = length(values)
+    count > 0 || throw(ArgumentError("values must have at least one component"))
+    _check_hjb_vector(values,count,"values")
+    _check_hjb_matrix(gradient,dimension,count,"gradient")
+    _check_hjb_matrix(second_derivatives,dimension,count,"second_derivatives")
+    control = problem.control(values,gradient,second_derivatives,x)
+    control isa AbstractVector || throw(ArgumentError("control callback must return a vector"))
+    Base.require_one_based_indexing(control)
+    for entry in control
+        _check_hjb_scalar(entry,"control")
+    end
+    return control
+end
+
+"""
+    hjb_residual(problem, x, values, gradient, second_derivatives)
+
+Compute controls with [`update_control`](@ref), then evaluate all HJB residuals.
+Call the control callback once and every supplied HJB primitive once. The result
+uses the user-supplied policy update; it is the Bellman residual only when that
+callback actually returns a feasible maximizer. For explicit controls, use
+`hjb_residual(problem,x,control,values,gradient,second_derivatives)`.
+"""
+function hjb_residual(problem::HJBProblem, x, values, gradient, second_derivatives)
+    control = update_control(problem,x,values,gradient,second_derivatives)
+    return hjb_residual(problem,x,control,values,gradient,second_derivatives)
+end
