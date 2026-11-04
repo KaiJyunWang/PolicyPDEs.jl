@@ -15,10 +15,12 @@ HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
 
 Each component is a user-defined callable struct or function with signature
 `component(x, a, i)`: continuous state, control, and regime label. No package
-supertype is required. Discount and flow return scalars; drift returns a scalar
-or state vector. Diffusion returns volatility sigma, a scalar in one dimension
-or a state-by-shock matrix in multiple dimensions. The second-order operator is
-one half of sigma times its transpose contracted with the Hessian.
+supertype is required. Discount and flow return scalars. Drift and diffusion
+return tuples/vectors with one entry per continuous coordinate; scalars are
+also accepted for a single continuous coordinate. Diffusion denotes volatility,
+with independent coordinate Brownian motions and second-order coefficients
+sigma_k^2/2. Matrix-valued diffusion and mixed derivative terms are outside the
+initial supported equation class.
 
 The immutable, parametrically typed container stores the four components plus
 `domain`, `boundary`, `regimes`, and `transition` without copying, conversion,
@@ -26,8 +28,9 @@ or callback evaluation. Domain and boundary are required. Regimes must be a
 nonempty tuple or vector of unique labels; their order determines PDE ordering.
 Mutable inputs remain shared: callers must not mutate regime membership or
 ordering after setup. The domain describes a common continuous state space.
-Linear boundary definitions are provided below; numerical enforcement,
-component return shapes, and policy feasibility await the numerical stages.
+Linear boundary definitions are provided below. Evaluation helpers check
+coefficient shapes and rates; numerical enforcement and policy feasibility
+await the discretization and solver stages.
 
 Construction does not assemble an operator or solve the equations. Initial
 guesses and numerical settings belong to later stages.
@@ -84,7 +87,7 @@ For regime i the equation is
 
     0 = max_a { f_i(x,a) - rho_i(x,a) * v_i(x)
                 + b_i(x,a) dot grad(v_i)
-                + (1/2) * tr(sigma_i * sigma_i' * Hessian(v_i))
+                + (1/2) * sum(sigma_ki(x,a)^2 * partial_kk(v_i) for k in 1:d)
                 + sum(q_ij(x,a) * (v_j(x) - v_i(x)) for j != i) }.
 
 `transition(x, a, i, j)` returns the finite, nonnegative rate **from i to j**,
@@ -92,8 +95,36 @@ for distinct labels i and j. It may depend on state and source-regime control.
 Only off-diagonal rates are provided; the generator diagonal is minus their
 outgoing sum. No diagonal callback is needed, including for a single PDE.
 Switching preserves x. `transition = nothing` means zero rates; multiple
-regimes then describe uncoupled HJBs. Numeric rate validation belongs to the
-evaluation stage rather than probing user callbacks during construction.
+regimes then describe uncoupled HJBs. `hjb_residual` validates off-diagonal rates
+at evaluation points without probing user callbacks during construction.
+
+The continuous state is x in R^d and the unknown is v: R^d -> R^m, with
+m = length(regimes). CTMC labels select the components v_i(x); they do not
+add a continuous domain axis. Ordered state vectors/tuples follow the domain's
+axis order; value-vector entries follow the order of regime labels. The sum
+over k is over continuous coordinates, and the sum over j is over CTMC states.
+
+The initial stochastic dynamics are
+
+    dX_k = mu_ki(X,c) dt + sigma_ki(X,c) dW_k,
+
+where the coordinate Brownian motions W_k are independent. No general
+state-by-shock volatility matrix, cross-coordinate Brownian covariance, or
+spatial reset upon a CTMC switch is included initially. All coefficients,
+including discounting and CTMC rates, may depend on continuous state, source
+regime, and source control.
+
+`hjb_coefficients(problem, x, control, regime)` evaluates the four local
+primitives and validates finite real outputs and coordinate dimensions.
+`hjb_residual(problem, x, control, values, gradient, second_derivatives; regime)`
+evaluates RHS minus LHS for one component using the full vector values=v(x)
+and that component's gradient and pure second derivatives. It checks each
+outgoing rate for finiteness and nonnegativity, never calls a diagonal rate,
+and evaluates every coefficient using the supplied source control. These are
+pointwise evaluation helpers; they do not compute derivatives, optimize a
+policy, construct a grid, or solve a PDE. The Bellman equation is the maximum
+of this residual over feasible controls. Control-dependent discounting must
+stay inside that maximum.
 
 With policy fixed, stack the regime values into a block linear system whose
 generator contains both spatial and switching terms. For state/control-dependent
@@ -126,7 +157,7 @@ Policy selection and upwind stencil selection must remain consistent.
 
 ## Backward problem
 
-For a discounted stationary HJB, write the discretized equation as
+For a constant discount rate rho independent of control, the discretized HJB is
 
     rho * v = max_a { r(a) + L(a) * v }.
 

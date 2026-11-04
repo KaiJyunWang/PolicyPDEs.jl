@@ -4,9 +4,9 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** early, unregistered package. `HJBProblem` construction and linear
-boundary definitions/evaluation are implemented; spatial discretization and
-numerical solvers are not implemented yet.
+**Status:** early, unregistered package. Problem setup, fixed-control HJB
+coefficient/residual evaluation, and linear boundary definitions/evaluation are
+implemented; spatial discretization and numerical solvers are not implemented yet.
 
 ## Installation
 
@@ -23,6 +23,24 @@ using PolicyPDEs
 An `HJBProblem` takes four separate components: `discount`, `drift`, `diffusion`,
 and `flow`. Each is a callable user-defined struct or a function taking the
 continuous state, control, and regime label `(x, a, i)`.
+
+The initial equation class is **independent coordinate Brownian motions plus a
+finite-state CTMC**. With `d` continuous coordinates and `m` regime labels, the
+unknown is `v: R^d -> R^m`. For the source component `i`, a fixed control `c`
+satisfies
+
+```text
+rho_i(x,c) * v_i(x) = u_i(x,c)
+    + sum(mu_ki(x,c) * partial_k(v_i) for k in 1:d)
+    + 0.5 * sum(sigma_ki(x,c)^2 * partial_kk(v_i) for k in 1:d)
+    + sum(q_ij(x,c) * (v_j(x) - v_i(x)) for j != i).
+```
+
+The field names map to `rho=discount`, `u=flow`, `mu=drift`, `sigma=diffusion`,
+and `q=transition`. Every primitive is a function of state and control (constant
+parameters can be represented by callbacks that ignore those arguments). The
+discrete label selects an output component, so only continuous coordinates
+belong in `domain`. `regimes` determines the order of entries in `v(x)`.
 
 ```julia
 using PolicyPDEs
@@ -47,14 +65,36 @@ regime `j`, for `i != j`. The coupling is
 `sum(q_ij * (v_j - v_i) for j != i)`, as in finite-income-state HJB systems.
 It may depend on the continuous state and source-regime control. By default,
 `regimes = (1,)` describes a single PDE; `transition = nothing` means no switching.
-`diffusion` supplies volatility sigma: the second-order operator uses
-`sigma * sigma' / 2`, not sigma itself as a variance coefficient.
+`diffusion` supplies one volatility per continuous coordinate, as a tuple or
+vector. The second-order coefficients are `sigma[k]^2 / 2`; there are no mixed
+second derivatives. Scalar drift and volatility are also accepted in one
+dimension. Matrix-valued diffusion is outside the initial supported equation class.
 
 Inputs retain their types without copying or callback evaluation. Construction
-checks for nonempty, unique regime labels. Numerical boundary enforcement,
-component return-shape and transition-rate validation, and
-policy optimization await the spatial discretization and solver interfaces.
+checks for nonempty, unique regime labels. Evaluation helpers validate callback
+results without changing their types. Numerical boundary enforcement and policy
+optimization await the spatial discretization and solver interfaces.
 See `?HJBProblem` and the [callable-struct example](examples/two_income_setup.jl).
+
+## Evaluating the equation
+
+```julia
+coefficients = hjb_coefficients(problem, 1.0, 1.0, 1)
+# v(x) has two components. Supply derivatives for component 1 only.
+residual = hjb_residual(problem, 1.0, 1.0, [1.0, 3.0], 0.0, 0.0; regime=1)
+# residual is approximately -0.01, using the two-income problem above.
+```
+
+The residual is RHS minus LHS for a supplied control. The Bellman equation
+maximizes this entire residual over feasible controls, including the term
+`-rho(x,c)*v_i(x)` when discounting depends on the control. Each source regime
+uses its own control when evaluating coefficients and outgoing transition rates.
+`hjb_residual` checks the value-vector length, derivative dimensions, and finite
+nonnegative off-diagonal rates. It does not compute derivatives or optimize controls.
+
+For multiple continuous coordinates, pass tuple/vector states, drift, volatility,
+gradients, and pure second derivatives in domain-axis order. See the
+[two-coordinate setup example](examples/independent_diffusion_setup.jl).
 
 ## Linear boundary conditions
 

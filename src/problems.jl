@@ -4,15 +4,17 @@
     HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
                regimes=(1,), transition=nothing)
 
-Describe one stationary HJB equation, or a finite system of HJB equations
-coupled by Markov switching, before spatial discretization. For regime `i`,
+Describe a stationary vector-valued HJB `v: R^d -> R^m`, where `d` is the
+continuous state dimension and `m = length(regimes)` is the number of CTMC
+states. The discrete state indexes a component of `v(x)`; it is not a
+continuous coordinate or another grid axis. For component `i`,
 
     0 = max_a { flow(x, a, i) - discount(x, a, i) * v_i(x)
-                + drift(x, a, i) ⋅ gradient(v_i)(x)
-                + (1/2) * tr(sigma * sigma' * hessian(v_i)(x))
+                + sum(mu_k * partial_k(v_i) for k in 1:d)
+                + (1/2) * sum(sigma_k^2 * partial_kk(v_i) for k in 1:d)
                 + sum(q_ij(x, a) * (v_j(x) - v_i(x)) for j != i) },
 
-where `sigma = diffusion(x, a, i)` and
+where `mu = drift(x, a, i)`, `sigma = diffusion(x, a, i)`, and
 `q_ij(x, a) = transition(x, a, i, j)`. Policy feasibility and optimization are
 part of the future discretization/solver interfaces.
 
@@ -21,17 +23,19 @@ part of the future discretization/solver interfaces.
 Supply each component as a callable user-defined struct or a function. No
 package supertype is required. All four components use `(x, a, i)`, where
 `x` is the continuous state, `a` is the control in the source regime, and `i`
-is a label from `regimes`. State and control representations are left to the
-discretizer.
+is a label from `regimes`. Use a scalar state in one dimension or a tuple/vector
+of continuous coordinates; the control may itself be a structured object.
 
 - `discount(x, a, i)`: scalar discount rate. A constant rate is represented by
   a callable that ignores its arguments.
-- `drift(x, a, i)`: continuous-state drift; scalar in one dimension, vector in
-  multiple dimensions.
+- `drift(x, a, i)`: one drift per continuous coordinate, as a tuple/vector.
+  A scalar is also accepted in one dimension.
 - `diffusion(x, a, i)`: volatility, **not** variance or the coefficient already
-  multiplied by `1/2`. Return a scalar in one dimension or a state-by-shock
-  matrix in multiple dimensions. Return zero volatility for deterministic
-  dynamics.
+  multiplied by `1/2`. Return one volatility per continuous coordinate as a
+  tuple/vector; a scalar is also accepted in one dimension. The initial scope
+  is diagonal state diffusion: each coordinate is driven by its own independent
+  Brownian motion, with no mixed second derivatives. Matrix-valued diffusion
+  is not supported. Return zero in deterministic coordinates.
 - `flow(x, a, i)`: scalar instantaneous payoff to be maximized.
 
 # Problem data and coupling
@@ -54,10 +58,13 @@ discretizer.
 The problem stores inputs with their concrete types, without copying or
 evaluating components. Mutable inputs remain shared; do not mutate regime
 membership or ordering after construction. Construction checks only the regime
-collection. Callback return shapes, rate signs, numerical boundary enforcement, and
-mathematical well-posedness must be checked by future numerical stages at
-evaluation points. Grids, initial guesses, pseudo-time steps, and tolerances
-belong to later stages. No discretizer or solver is implemented yet.
+collection. [`hjb_coefficients`](@ref) checks coefficient shapes and finite
+values at supplied states and controls. [`hjb_residual`](@ref) evaluates the
+fixed-control equation from user-supplied values and derivatives, including
+nonnegative CTMC rates. Numerical boundary enforcement and mathematical
+well-posedness remain numerical-stage responsibilities. Grids, initial guesses,
+pseudo-time steps, and tolerances belong to later stages. No discretizer or
+solver is implemented yet.
 
 # Example
 
@@ -95,6 +102,7 @@ struct HJBProblem{R,M,S,F,D,B,I,Q}
         regimes isa Union{Tuple,AbstractVector} ||
             throw(ArgumentError("regimes must be a nonempty tuple or vector of unique labels"))
         isempty(regimes) && throw(ArgumentError("regimes must not be empty"))
+        regimes isa AbstractVector && Base.require_one_based_indexing(regimes)
         allunique(regimes) || throw(ArgumentError("regime labels must be unique"))
         return new{typeof(discount),typeof(drift),typeof(diffusion),typeof(flow),
                    typeof(domain),typeof(boundary),typeof(regimes),typeof(transition)}(

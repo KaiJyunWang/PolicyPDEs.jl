@@ -124,11 +124,11 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
         @test problem.diffusion(1, 1, 1)^2 / 2 ≈ 0.02
 
         vector_drift = (x, a, i) -> [a, -a]
-        matrix_volatility = (x, a, i) -> [0.2 0.0; 0.1 0.3]
-        vector_problem = HJBProblem(discount, vector_drift, matrix_volatility, flow;
+        vector_volatility = (x, a, i) -> [0.2, 0.3]
+        vector_problem = HJBProblem(discount, vector_drift, vector_volatility, flow;
                                     domain = (; x = (0, 1), y = (0, 1)), boundary)
         @test vector_problem.drift([0.5, 0.5], 0.1, 1) == [0.1, -0.1]
-        sigma = vector_problem.diffusion([0.5, 0.5], 0.1, 1)
-        @test sigma * sigma' / 2 ≈ [0.02 0.01; 0.01 0.05]
+        coefficients = hjb_coefficients(vector_problem, [0.5, 0.5], 0.1, 1)
+        @test coefficients.diffusion .^ 2 ./ 2 ≈ [0.02, 0.045]
     end
 end
