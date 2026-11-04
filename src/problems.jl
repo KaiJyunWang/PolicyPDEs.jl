@@ -1,0 +1,121 @@
+"""
+    HJBProblem(discount, drift, diffusion, flow; control, domain, boundary,
+               transition=nothing)
+    HJBProblem(; discount, drift, diffusion, flow, control, domain, boundary,
+               transition=nothing)
+
+Describe a stationary vector-valued HJB `v: R^d -> R^m` with independent
+coordinate Brownian motions and CTMC switching. Discrete states index value
+components, not continuous domain axes.
+
+All five user-defined primitives are callable structs or functions of
+`(x, control)`, with no discrete-state argument. Their output shapes are:
+
+- `discount(x, control)`: length-`m` vector of discount rates.
+- `flow(x, control)`: length-`m` vector of instantaneous payoffs.
+- `drift(x, control)`: `d × m` matrix; entry `[k,i]` is coordinate `k`'s
+  drift in regime `i`.
+- `diffusion(x, control)`: `d × m` matrix of coordinate volatilities.
+  Entry `[k,i]` contributes `sigma[k,i]^2 / 2` to the pure second derivative.
+  Columns index regimes, not Brownian shocks. Coordinate shocks are independent;
+  mixed derivatives and correlated innovations are outside the initial scope.
+- `transition(x, control)`: `m × m` matrix of off-diagonal intensities;
+  `[i,j]` is the nonnegative rate from regime `i` to `j`. Diagonal entries
+  must be zero. This is a rate matrix, not the full CTMC generator; the generator
+  diagonal is minus the outgoing rate sum. With `transition=nothing`, all
+  switching rates are zero.
+
+Vectors must retain length `m` and matrices their stated shapes even when
+`d=1` or `m=1`; tuples are also accepted for the vector outputs. Continuous
+coordinates follow the order of the domain bounds; value entries, coefficient columns,
+and transition rows/columns use the same component ordering. The component
+count `m` is inferred from `length(discount(x, control))` during evaluation.
+
+For a supplied control, component `i` has residual
+
+    flow[i] - discount[i] * v[i]
+      + sum(drift[k,i] * partial_k(v_i)
+            + diffusion[k,i]^2 * partial_kk(v_i) / 2 for k in 1:d)
+      + sum(transition[i,j] * (v[j] - v[i]) for j != i).
+
+The required `control(values, gradient, second_derivatives, x)` callback
+returns an `AbstractVector` of finite real controls. Values have length m;
+gradient and pure second derivatives have shape d-by-m. No mixed derivatives
+are supplied in the independent-coordinate diffusion case. All arguments must
+be treated as read-only. The callback is not called during construction.
+
+[`update_control`](@ref) validates inputs and the returned vector, preserving
+its identity/type. Control-vector length/layout is model-defined; one scalar
+per value component is common, and multiple controls can use a documented
+flattened layout. There is no imposed equality between control count and m.
+The vector passes unchanged to the economic primitives. For row-wise policy
+improvement, source-i coefficients and outgoing rates depend on source control
+i. The user implements feasible, greedy policy improvement, including
+control-dependent discount and transition terms. The package validates the
+data, not feasibility or optimality. Control-dependent discounting stays inside
+the complete residual maximization.
+
+Use a scalar continuous state in one dimension or a tuple/vector in multiple
+dimensions. `domain` must be a [`RectangularDomain`](@ref) with lower/upper
+bounds. `boundary` must be a [`RectangularBoundary`](@ref) with one condition
+per lower and upper coordinate face. Their dimensions must match. Face
+coefficient callbacks take only `x` and return all components together.
+
+Construction validates the rectangle/face dimension match without evaluating callbacks. It does not
+store component labels or a component count. Mutable inputs remain shared.
+Callbacks must keep the same nonzero component count across states and controls.
+[`hjb_coefficients`](@ref) validates evaluated shapes, finite values, and rates.
+[`hjb_residual`](@ref) evaluates all value components from supplied derivatives,
+with either explicit controls or controls returned by the callback.
+No spatial discretizer or PDE solver is implemented yet.
+
+# Example
+
+```julia
+problem = HJBProblem(;
+    control = (v, Dv, D2v, x) -> inv.(Dv[1,:]), # log-utility interior rule
+    discount = (x, c) -> [0.05, 0.05],
+    flow = (x, c) -> log.(c),
+    drift = (x, c) -> reshape([0.1, 0.2] .+ 0.03*x .- c, 1, 2),
+    diffusion = (x, c) -> zeros(1, 2),
+    transition = (x, c) -> [0.0 0.02; 0.03 0.0],
+    domain = RectangularDomain(lower=[0.0], upper=[5.0]),
+    boundary = RectangularBoundary(
+        lower=LinearEqualityBoundary(1,0,0),
+        upper=LinearEqualityBoundary(1,0,0),
+    ),
+)
+```
+"""
+struct HJBProblem{R,M,S,F,C,D,B,Q}
+    discount::R
+    drift::M
+    diffusion::S
+    flow::F
+    control::C
+    domain::D
+    boundary::B
+    transition::Q
+
+    function HJBProblem(discount,drift,diffusion,flow,control,domain,boundary,transition)
+        domain isa RectangularDomain ||
+            throw(ArgumentError("domain must be a RectangularDomain"))
+        boundary isa RectangularBoundary ||
+            throw(ArgumentError("boundary must be a RectangularBoundary"))
+        length(domain) == length(boundary) ||
+            throw(DimensionMismatch("domain dimension must match lower/upper boundary face counts"))
+        return new{typeof(discount),typeof(drift),typeof(diffusion),typeof(flow),typeof(control),
+                   typeof(domain),typeof(boundary),typeof(transition)}(
+            discount,drift,diffusion,flow,control,domain,boundary,transition)
+    end
+end
+
+function HJBProblem(discount, drift, diffusion, flow; control, domain, boundary,
+                    transition = nothing)
+    return HJBProblem(discount, drift, diffusion, flow, control, domain, boundary, transition)
+end
+
+function HJBProblem(; discount, drift, diffusion, flow, control, domain, boundary,
+                    transition = nothing)
+    return HJBProblem(discount, drift, diffusion, flow; control, domain, boundary, transition)
+end
