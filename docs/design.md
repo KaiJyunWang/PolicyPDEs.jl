@@ -1,39 +1,72 @@
 # Design plan
 
-This document records the intended design. Names and signatures remain provisional.
-
-## Implemented: HJBProblem
-
-The setup API accepts four components, either positionally or as keywords:
+## Implemented: bulk HJB problem API
 
 ```julia
-HJBProblem(discount, drift, diffusion, flow; domain, boundary,
-           regimes = (1,), transition = nothing)
-HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
-           regimes = (1,), transition = nothing)
+HJBProblem(discount,drift,diffusion,flow;domain,boundary,regimes=(1,),transition=nothing)
+HJBProblem(;discount,drift,diffusion,flow,domain,boundary,regimes=(1,),transition=nothing)
 ```
 
-Each component is a user-defined callable struct or function with signature
-`component(x, a, i)`: continuous state, control, and regime label. No package
-supertype is required. Discount and flow return scalars. Drift and diffusion
-return tuples/vectors with one entry per continuous coordinate; scalars are
-also accepted for a single continuous coordinate. Diffusion denotes volatility,
-with independent coordinate Brownian motions and second-order coefficients
-sigma_k^2/2. Matrix-valued diffusion and mixed derivative terms are outside the
-initial supported equation class.
+The problem describes `v: R^d -> R^m`. The continuous state x has d coordinates;
+m CTMC states index output components, not domain/grid axes. Regime metadata is
+a nonempty tuple/vector of unique labels. Domain-axis order determines continuous
+rows; regime order determines vector entries, matrix columns, and switching
+source/destination positions.
 
-The immutable, parametrically typed container stores the four components plus
-`domain`, `boundary`, `regimes`, and `transition` without copying, conversion,
-or callback evaluation. Domain and boundary are required. Regimes must be a
-nonempty tuple or vector of unique labels; their order determines PDE ordering.
-Mutable inputs remain shared: callers must not mutate regime membership or
-ordering after setup. The domain describes a common continuous state space.
-Linear boundary definitions are provided below. Evaluation helpers check
-coefficient shapes and rates; numerical enforcement and policy feasibility
-await the discretization and solver stages.
+All five HJB primitives use `(x,control)`, with no discrete-state input:
 
-Construction does not assemble an operator or solve the equations. Initial
-guesses and numerical settings belong to later stages.
+- Discount and flow return length-m vectors (tuples also accepted).
+- Drift and diffusion return d-by-m matrices, coordinate by regime.
+- Transition returns an m-by-m matrix of off-diagonal rates, source by destination.
+  Diagonal entries must be zero; generator diagonals are minus outgoing sums.
+  A supplied callback must return a matrix; use `transition=nothing` to omit it.
+
+The diagonal-diffusion convention is one independent coordinate Brownian motion
+per continuous coordinate. The volatility matrix enumerates regimes by columns,
+not shock loading directions. Entry sigma[k,i] contributes sigma[k,i]^2/2 to
+partial_kk(v_i). No mixed derivatives, correlated coordinate innovations, or
+spatial resets upon CTMC switches are included initially. Output matrix shapes
+remain explicit for d=1 or m=1; no automatic squeezing/broadcasting is applied.
+
+The opaque control object is passed unchanged to all callbacks. A vector may
+hold one control per regime, a matrix may hold several controls per regime,
+or callbacks may define a structured/shared candidate control. For row-wise
+policy improvement, source-i entries and transition row i depend on source
+control c_i only. Cross-regime control dependence would require a different
+optimization interface and is outside the initial row-wise solver contract.
+
+Construction preserves concrete callback types without evaluation/copying and
+checks regime metadata. Domain/boundary data are required. Mutating shared
+inputs changes the problem; regime membership and order must remain fixed.
+Boundary coefficient callbacks remain a separate `(x,regime)` interface.
+
+## Coefficients and fixed-control residuals
+
+`hjb_coefficients(problem,x,control)` calls all supplied HJB primitives once,
+returning discount, drift, diffusion, flow, and transition with their original
+types/references. It checks shapes, finite real outputs, nonnegative
+off-diagonal rates, and zero rate diagonals. A named-tuple domain's axis count
+must match x, represented as a scalar in one dimension or tuple/vector.
+
+`hjb_residual(problem,x,control,values,gradient,second_derivatives)` returns
+all m residual components together. Values is a length-m vector/tuple;
+derivatives are d-by-m matrices of first and pure second partial derivatives.
+The residual for source i is
+
+    flow[i] - discount[i]*values[i]
+      + sum(drift[k,i]*gradient[k,i]
+            + diffusion[k,i]^2*second_derivatives[k,i]/2 for k in 1:d)
+      + sum(transition[i,j]*(values[j]-values[i]) for j != i).
+
+Each callback is evaluated once for the full control object. There are no
+regime-specific callback calls. CTMC switching keeps x fixed; the rate matrix
+contributes exactly Q*v when the generator diagonal is derived as specified.
+No transition callback means zero switching.
+
+These are mathematical evaluation helpers, without numerical differentiation,
+policy optimization, spatial assembly, or PDE solving. The Bellman equation
+maximizes the entire residual, including discounting when it depends on control.
+The fixed-policy system is linear in values and derivatives.
 
 ## Linear boundary definitions
 
@@ -81,65 +114,22 @@ enforcement and the active-set/complementarity treatment needed for inequalities
 remain future numerical work. Merely storing an inequality does not impose an
 equality where it is slack or establish a well-posed boundary value problem.
 
-## Markov-switching HJB systems
+## CTMC examples and policy evaluation
 
-For regime i the equation is
+[Achdou et al. (2022), REStud 89(1), 45-86](https://benjaminmoll.com/wp-content/uploads/2019/07/HACT.pdf)
+uses the two-state terms lambda_1*(v_2-v_1) and lambda_2*(v_1-v_2).
+The off-diagonal rate callback returns `[0 lambda_1; lambda_2 0]`.
+[The callable-struct setup](../examples/two_income_setup.jl) uses assets on [0,5]
+and a two-entry consumption vector. Parameters and upper boundary are illustrative,
+not a replication calibration.
+[The independent-diffusion setup](../examples/independent_diffusion_setup.jl)
+has d=2 and m=2 with state/control-dependent coefficients and rates.
 
-    0 = max_a { f_i(x,a) - rho_i(x,a) * v_i(x)
-                + b_i(x,a) dot grad(v_i)
-                + (1/2) * sum(sigma_ki(x,a)^2 * partial_kk(v_i) for k in 1:d)
-                + sum(q_ij(x,a) * (v_j(x) - v_i(x)) for j != i) }.
-
-`transition(x, a, i, j)` returns the finite, nonnegative rate **from i to j**,
-for distinct labels i and j. It may depend on state and source-regime control.
-Only off-diagonal rates are provided; the generator diagonal is minus their
-outgoing sum. No diagonal callback is needed, including for a single PDE.
-Switching preserves x. `transition = nothing` means zero rates; multiple
-regimes then describe uncoupled HJBs. `hjb_residual` validates off-diagonal rates
-at evaluation points without probing user callbacks during construction.
-
-The continuous state is x in R^d and the unknown is v: R^d -> R^m, with
-m = length(regimes). CTMC labels select the components v_i(x); they do not
-add a continuous domain axis. Ordered state vectors/tuples follow the domain's
-axis order; value-vector entries follow the order of regime labels. The sum
-over k is over continuous coordinates, and the sum over j is over CTMC states.
-
-The initial stochastic dynamics are
-
-    dX_k = mu_ki(X,c) dt + sigma_ki(X,c) dW_k,
-
-where the coordinate Brownian motions W_k are independent. No general
-state-by-shock volatility matrix, cross-coordinate Brownian covariance, or
-spatial reset upon a CTMC switch is included initially. All coefficients,
-including discounting and CTMC rates, may depend on continuous state, source
-regime, and source control.
-
-`hjb_coefficients(problem, x, control, regime)` evaluates the four local
-primitives and validates finite real outputs and coordinate dimensions.
-`hjb_residual(problem, x, control, values, gradient, second_derivatives; regime)`
-evaluates RHS minus LHS for one component using the full vector values=v(x)
-and that component's gradient and pure second derivatives. It checks each
-outgoing rate for finiteness and nonnegativity, never calls a diagonal rate,
-and evaluates every coefficient using the supplied source control. These are
-pointwise evaluation helpers; they do not compute derivatives, optimize a
-policy, construct a grid, or solve a PDE. The Bellman equation is the maximum
-of this residual over feasible controls. Control-dependent discounting must
-stay inside that maximum.
-
-With policy fixed, stack the regime values into a block linear system whose
-generator contains both spatial and switching terms. For state/control-dependent
-discounting, A is diag(rho(policy)) minus that full generator. The semi-implicit
-step remains `(A + I/dt) * v_next = flow(policy) + v_current/dt`.
-
-For the two-income-state setting in
-[Achdou et al. (2022), REStud 89(1), 45-86](https://benjaminmoll.com/wp-content/uploads/2019/07/HACT.pdf),
-the terms are lambda_1 * (v_2 - v_1) and lambda_2 * (v_1 - v_2).
-[The runnable setup example](../examples/two_income_setup.jl) supplies four
-callable structs and an asymmetric transition-rate struct. Parameters are
-illustrative rather than a replication calibration. Arbitrary finite regime
-counts and state/control-dependent rates use the same constructor. This API
-describes switching among HJBs; the forward distribution equation remains a
-separate planned API, and equilibrium feedback is not implemented.
+With policy fixed, stack the values into a block linear system. The full
+generator contains spatial and CTMC terms. For state/control-dependent
+discounting, A is diag(rho(policy)) minus that generator. The semi-implicit
+step is `(A+I/dt)*v_next=flow(policy)+v_current/dt`. The forward distribution
+problem and equilibrium feedback remain separate planned APIs.
 
 ## Public workflow
 

@@ -1,98 +1,105 @@
-include(joinpath(@__DIR__, "..", "examples", "independent_diffusion_setup.jl"))
+include(joinpath(@__DIR__,"..","examples","independent_diffusion_setup.jl"))
 
-@testset "Independent diffusion and CTMC evaluation" begin
-    @testset "Runnable independent-coordinate setup example" begin
-        problem = @inferred independent_diffusion_problem()
-        coefficients = hjb_coefficients(problem, (1.0,1.0), 0.5, 1)
-        @test coefficients.discount ≈ 0.056
-        @test all(isapprox.(coefficients.diffusion, (0.05,0.1005)))
-        @test hjb_residual(problem, (1.0,1.0), 0.5, (1.0,2.0), (0.0,0.0),
-                           (0.0,0.0); regime=1) ≈ log(0.5) - 0.0239
-    end
-    @testset "Two-dimensional manufactured vector value" begin
-        # v_i(x) = x_1^2 + 3*x_2^2 + 2*(i-1), so mixed derivatives vanish.
-        problem = HJBProblem(
-            (x, c, i) -> 0.1 + 0.01*x[1] + 0.02*c + 0.03*i,
-            (x, c, i) -> (x[1] + c, i - x[2]),
-            (x, c, i) -> (0.2*x[1], 0.1*(c+i)),
-            (x, c, i) -> x[1] + 2*x[2] + c + i;
-            domain = (; asset = (0.0, 5.0), productivity = (0.0, 3.0)),
-            boundary = nothing,
-            regimes = (1, 2),
-            transition = (x, c, i, j) -> begin
-                i == j && error("diagonal intensities must not be requested")
-                0.1 * (x[1] + c + i)
-            end,
-        )
-        x = (1.0, 2.0)
-        v = x -> [x[1]^2 + 3*x[2]^2, x[1]^2 + 3*x[2]^2 + 2]
-        coefficients = @inferred hjb_coefficients(problem, x, 0.5, 1)
-        @test coefficients.discount ≈ 0.15
-        @test coefficients.drift == (1.5, -1.0)
-        @test all(isapprox.(coefficients.diffusion, (0.2, 0.15)))
-        @test coefficients.flow == 6.5
-        # flow 6.5 - discount*value 1.95 + drift -9 + diffusion .1075 + jumps .5.
-        @test hjb_residual(problem, x, 0.5, v(x), (2.0, 12.0), (2.0, 6.0);
-                           regime = 1) ≈ -3.8425
-        # Same continuous point and derivatives, but the second value component
-        # has a different discount, drift, and outgoing switching rate.
-        @test hjb_residual(problem, x, 0.5, v(x), (2.0, 12.0), (2.0, 6.0);
-                           regime = 2) ≈ 7.3275
-        @test_throws DimensionMismatch hjb_coefficients(problem, 1.0, 0.5)
-        @test_throws DimensionMismatch hjb_residual(problem, x, 0.5, [13.0], (2, 12), (2, 6))
-        @test_throws DimensionMismatch hjb_residual(problem, x, 0.5, v(x), (2,), (2, 6))
-        @test_throws ArgumentError hjb_residual(problem, x, 0.5, v(x), (2, 12), [2 0; 0 6])
+@testset "Bulk HJB coefficient and residual evaluation" begin
+    @testset "Two-coordinate setup example" begin
+        problem=@inferred independent_diffusion_problem()
+        control=[0.5,0.5]
+        coefficients=@inferred hjb_coefficients(problem,(1.0,1.0),control)
+        @test coefficients.discount ≈ [0.056,0.056]
+        @test coefficients.diffusion ≈ [0.05 0.05;0.1005 0.1005]
+        @test hjb_residual(problem,(1.0,1.0),control,[1.0,2.0],zeros(2,2),zeros(2,2)) ≈
+              [log(0.5)-0.0239,log(0.5)-0.12515]
     end
 
-    @testset "Scalar state, component ordering, and source control" begin
-        problem = two_income_problem()
-        @test hjb_residual(problem, 1.0, 1.0, [1.0, 3.0], 0.0, 0.0; regime=1) ≈ -0.01
-        @test hjb_residual(problem, 1.0, 1.0, [1.0, 3.0], 0.0, 0.0; regime=2) ≈ -0.21
-        labels = (:high, :low)
-        controls_seen = []
-        labeled = HJBProblem((x,c,i)->0, (x,c,i)->0, (x,c,i)->0, (x,c,i)->0;
-            domain = (; asset=(0,5)), boundary=nothing, regimes=labels,
-            transition = (x, c, i, j) -> begin
-                push!(controls_seen, (c, i, j))
-                c.rate
-            end)
-        control = (; rate=0.2)
-        @test hjb_residual(labeled, 1, control, [5, 2], 0, 0; regime=:high) ≈ -0.6
-        @test controls_seen == [(control, :high, :low)]
-        @test_throws ArgumentError hjb_coefficients(labeled, 1, control, :missing)
+    @testset "Manufactured vector value: two coordinates, three regimes" begin
+        problem=HJBProblem(;
+            discount=(x,c)->[0.1+0.01*x[1]+0.02*c[i]+0.03*i for i in 1:3],
+            drift=(x,c)->[k==1 ? x[1]+c[i] : i-x[2] for k in 1:2,i in 1:3],
+            diffusion=(x,c)->[k==1 ? 0.2*x[1] : 0.1*(c[i]+i) for k in 1:2,i in 1:3],
+            flow=(x,c)->[x[1]+2*x[2]+c[i]+i for i in 1:3],
+            transition=(x,c)->[i==j ? 0.0 : 0.1*(x[1]+c[i]+i) for i in 1:3,j in 1:3],
+            domain=(;asset=(0,5),productivity=(0,3)),boundary=nothing,
+            regimes=(:low,:middle,:high))
+        x=(1.0,2.0)
+        c=[0.5,0.5,0.5]
+        v=x->[x[1]^2+3*x[2]^2+2*(i-1) for i in 1:3]
+        gradient=[2.0 2.0 2.0;12.0 12.0 12.0]
+        second=[2.0 2.0 2.0;6.0 6.0 6.0]
+        coefficients=hjb_coefficients(problem,x,c)
+        @test coefficients.discount ≈ [0.15,0.18,0.21]
+        @test size(coefficients.drift) == (2,3)
+        @test coefficients.transition ≈ [0 0.25 0.25;0.35 0 0.35;0.45 0.45 0]
+        @test hjb_residual(problem,x,c,v(x),gradient,second) ≈ [-2.8425,8.0275,17.6375]
+        @test_throws DimensionMismatch hjb_coefficients(problem,1.0,c)
+        @test_throws DimensionMismatch hjb_residual(problem,x,c,[13.0],gradient,second)
+        @test_throws DimensionMismatch hjb_residual(problem,x,c,v(x),transpose(gradient),second)
+        @test_throws DimensionMismatch hjb_residual(problem,x,c,v(x),gradient,zeros(2,2))
+        # Changing only source control 2 leaves other residual components intact.
+        changed=hjb_residual(problem,x,[0.5,0.8,0.5],v(x),gradient,second)
+        baseline=hjb_residual(problem,x,c,v(x),gradient,second)
+        @test changed[1] == baseline[1]
+        @test changed[2] != baseline[2]
+        @test changed[3] == baseline[3]
     end
 
-    @testset "Single equation and no switching" begin
-        callbacks = ((x,c,i)->1//2, (x,c,i)->0, (x,c,i)->0, (x,c,i)->1)
-        for transition in (nothing, (args...)->error("single component has no off-diagonal rate"))
-            problem = HJBProblem(callbacks...; domain=(; asset=(0,5)), boundary=nothing,
-                                 transition)
-            coefficients = hjb_coefficients(problem, 1, nothing)
-            @test coefficients.discount === 1//2
-            @test hjb_residual(problem, 1, nothing, (2,), 0, 0) == 0
+    @testset "Each primitive called once with the full control object" begin
+        original=two_income_problem()
+        calls=zeros(Int,5)
+        controls_seen=[]
+        names=(:discount,:drift,:diffusion,:flow,:transition)
+        callbacks=map(enumerate(names)) do (k,name)
+            (x,c)->begin
+                calls[k]+=1
+                push!(controls_seen,c)
+                getproperty(original,name)(x,c)
+            end
         end
-        uncoupled = HJBProblem(callbacks...; domain=(; asset=(0,5)), boundary=nothing,
-                               regimes=(1,2))
-        @test hjb_residual(uncoupled, (1,), nothing, (2,4), (0,), (0,); regime=2) == -1
+        problem=HJBProblem(callbacks[1:4]...;domain=original.domain,
+                           boundary=original.boundary,regimes=(:high,:low),transition=callbacks[5])
+        control=[1.0,1.0]
+        @test hjb_residual(problem,1.0,control,[1.0,3.0],zeros(1,2),zeros(1,2)) ≈ [-0.01,-0.21]
+        @test calls == ones(Int,5)
+        @test all(c->c===control,controls_seen)
+        # Output positions follow regime metadata order, not numeric label lookup.
+        @test problem.regimes == (:high,:low)
     end
 
-    @testset "Coefficient shapes, finite outputs, and CTMC rates" begin
-        make_problem(; discount=(x,c,i)->0.05, drift=(x,c,i)->(0.0,0.0),
-                     diffusion=(x,c,i)->(0.2,0.3), flow=(x,c,i)->1.0,
-                     transition=nothing) = HJBProblem(discount, drift, diffusion, flow;
-            domain=(; asset=(0,5), productivity=(0,3)), boundary=nothing,
-            regimes=(1,2), transition)
-        x = [1.0, 2.0]
-        @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c,i)->[0.2 0; 0 0.3]), x, 1)
-        @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c,i)->0.2), x, 1)
-        @test_throws DimensionMismatch hjb_coefficients(make_problem(drift=(x,c,i)->(1,)), x, 1)
-        @test_throws ArgumentError hjb_coefficients(make_problem(discount=(x,c,i)->Inf), x, 1)
-        @test_throws ArgumentError hjb_coefficients(make_problem(flow=(x,c,i)->[1,2]), x, 1)
-        @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c,i)->(NaN,0.3)), x, 1)
-        @test_throws ArgumentError hjb_coefficients(make_problem(), [1.0, Inf], 1)
-        for rate in (-0.1, Inf, NaN, 1+im)
-            invalid = make_problem(transition=(x,c,i,j)->rate)
-            @test_throws ArgumentError hjb_residual(invalid, x, 1, (1,2), (0,0), (0,0))
+    @testset "Single component, exact coefficients, and absent switching" begin
+        callbacks=((x,c)->(1//2,), (x,c)->reshape([0],1,1),
+                   (x,c)->reshape([0],1,1), (x,c)->[1])
+        for transition in (nothing,(x,c)->zeros(1,1))
+            problem=HJBProblem(callbacks...;domain=(;asset=(0,5)),boundary=nothing,transition)
+            coefficients=hjb_coefficients(problem,1,nothing)
+            @test coefficients.discount === (1//2,)
+            @test hjb_residual(problem,1,nothing,(2,),zeros(1,1),zeros(1,1)) == [0]
         end
+        scalar_control=HJBProblem((x,c)->[0,0],(x,c)->zeros(1,2),(x,c)->zeros(1,2),
+            (x,c)->[c,c^2];domain=(;asset=(0,5)),boundary=nothing,regimes=(1,2))
+        @test hjb_residual(scalar_control,1,2,[0,0],zeros(1,2),zeros(1,2)) == [2,4]
+    end
+
+    @testset "Strict shapes and CTMC rate validation" begin
+        make_problem(;discount=(x,c)->[0.05,0.05],drift=(x,c)->zeros(2,2),
+                     diffusion=(x,c)->[0.2 0.2;0.3 0.3],flow=(x,c)->[1,1],
+                     transition=nothing)=HJBProblem(discount,drift,diffusion,flow;
+            domain=(;asset=(0,5),productivity=(0,3)),boundary=nothing,
+            regimes=(1,2),transition)
+        x=[1.0,2.0]
+        @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c)->[0.2,0.3]),x,1)
+        @test_throws DimensionMismatch hjb_coefficients(make_problem(diffusion=(x,c)->zeros(2,3)),x,1)
+        @test_throws DimensionMismatch hjb_coefficients(make_problem(drift=(x,c)->zeros(1,2)),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(discount=(x,c)->0.05),x,1)
+        @test_throws DimensionMismatch hjb_coefficients(make_problem(flow=(x,c)->[1]),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(discount=(x,c)->[Inf,1]),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(diffusion=(x,c)->[NaN 0;0 0]),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(),[1.0,Inf],1)
+        @test_throws DimensionMismatch hjb_coefficients(make_problem(transition=(x,c)->zeros(3,3)),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(transition=(x,c)->[0,1]),x,1)
+        @test_throws ArgumentError hjb_coefficients(make_problem(transition=(x,c)->nothing),x,1)
+        for rate in (-0.1,Inf,NaN,1+im)
+            @test_throws ArgumentError hjb_coefficients(make_problem(transition=(x,c)->[0 rate;0.2 0]),x,1)
+        end
+        # A full generator is intentionally distinct from the off-diagonal rate matrix.
+        @test_throws ArgumentError hjb_coefficients(make_problem(transition=(x,c)->[-0.1 0.1;0.2 -0.2]),x,1)
     end
 end

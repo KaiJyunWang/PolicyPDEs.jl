@@ -4,86 +4,74 @@
     HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
                regimes=(1,), transition=nothing)
 
-Describe a stationary vector-valued HJB `v: R^d -> R^m`, where `d` is the
-continuous state dimension and `m = length(regimes)` is the number of CTMC
-states. The discrete state indexes a component of `v(x)`; it is not a
-continuous coordinate or another grid axis. For component `i`,
+Describe a stationary vector-valued HJB `v: R^d -> R^m` with independent
+coordinate Brownian motions and CTMC switching. Discrete states index value
+components, not continuous domain axes.
 
-    0 = max_a { flow(x, a, i) - discount(x, a, i) * v_i(x)
-                + sum(mu_k * partial_k(v_i) for k in 1:d)
-                + (1/2) * sum(sigma_k^2 * partial_kk(v_i) for k in 1:d)
-                + sum(q_ij(x, a) * (v_j(x) - v_i(x)) for j != i) },
+All five user-defined primitives are callable structs or functions of
+`(x, control)`, with no discrete-state argument. Their output shapes are:
 
-where `mu = drift(x, a, i)`, `sigma = diffusion(x, a, i)`, and
-`q_ij(x, a) = transition(x, a, i, j)`. Policy feasibility and optimization are
-part of the future discretization/solver interfaces.
+- `discount(x, control)`: length-`m` vector of discount rates.
+- `flow(x, control)`: length-`m` vector of instantaneous payoffs.
+- `drift(x, control)`: `d × m` matrix; entry `[k,i]` is coordinate `k`'s
+  drift in regime `i`.
+- `diffusion(x, control)`: `d × m` matrix of coordinate volatilities.
+  Entry `[k,i]` contributes `sigma[k,i]^2 / 2` to the pure second derivative.
+  Columns index regimes, not Brownian shocks. Coordinate shocks are independent;
+  mixed derivatives and correlated innovations are outside the initial scope.
+- `transition(x, control)`: `m × m` matrix of off-diagonal intensities;
+  `[i,j]` is the nonnegative rate from regime `i` to `j`. Diagonal entries
+  must be zero. This is a rate matrix, not the full CTMC generator; the generator
+  diagonal is minus the outgoing rate sum. With `transition=nothing`, all
+  switching rates are zero.
 
-# Components
+Vectors must retain length `m` and matrices their stated shapes even when
+`d=1` or `m=1`; tuples are also accepted for the vector outputs. Continuous
+coordinates follow domain-axis order; value entries, coefficient columns,
+and transition rows/columns follow `regimes` order.
 
-Supply each component as a callable user-defined struct or a function. No
-package supertype is required. All four components use `(x, a, i)`, where
-`x` is the continuous state, `a` is the control in the source regime, and `i`
-is a label from `regimes`. Use a scalar state in one dimension or a tuple/vector
-of continuous coordinates; the control may itself be a structured object.
+For a supplied control, component `i` has residual
 
-- `discount(x, a, i)`: scalar discount rate. A constant rate is represented by
-  a callable that ignores its arguments.
-- `drift(x, a, i)`: one drift per continuous coordinate, as a tuple/vector.
-  A scalar is also accepted in one dimension.
-- `diffusion(x, a, i)`: volatility, **not** variance or the coefficient already
-  multiplied by `1/2`. Return one volatility per continuous coordinate as a
-  tuple/vector; a scalar is also accepted in one dimension. The initial scope
-  is diagonal state diffusion: each coordinate is driven by its own independent
-  Brownian motion, with no mixed second derivatives. Matrix-valued diffusion
-  is not supported. Return zero in deterministic coordinates.
-- `flow(x, a, i)`: scalar instantaneous payoff to be maximized.
+    flow[i] - discount[i] * v[i]
+      + sum(drift[k,i] * partial_k(v_i)
+            + diffusion[k,i]^2 * partial_kk(v_i) / 2 for k in 1:d)
+      + sum(transition[i,j] * (v[j] - v[i]) for j != i).
 
-# Problem data and coupling
+The control is passed unchanged to every callback. A vector can contain one
+control per regime, or a matrix can hold several controls per regime. For
+row-wise policy improvement, output component/column `i` and transition row
+`i` should depend on the source regime's control only. A shared candidate
+control is also possible if the callbacks implement it. Control feasibility
+and optimization belong to the future solver. Control-dependent discounting
+stays inside the maximization of the complete residual.
 
-- `domain`: continuous state-space description, independent of a numerical grid.
-- `boundary`: explicit boundary data; there is no implicit boundary condition.
-  For linear conditions, use axis-keyed named tuples with `lower` and `upper`
-  entries holding [`LinearEqualityBoundary`](@ref) or
-  [`LinearInequalityBoundary`](@ref). Coefficients may depend on state and regime.
-- `regimes`: a nonempty tuple or vector of unique regime labels. Defaults to
-  `(1,)` for a single PDE. The order determines the ordering of equations.
-- `transition`: callable `transition(x, a, i, j)` returning the finite,
-  nonnegative intensity **from `i` to `j`**, for `i != j`. It may depend on
-  state and source-regime control. Supply off-diagonal rates only: the generator
-  diagonal is minus the sum of outgoing rates. With `nothing`, all switching
-  rates are zero, so multiple regimes describe uncoupled equations. A single
-  regime has no switching term and never requires a diagonal rate evaluation.
-  Switching preserves the continuous state `x`.
+Use a scalar continuous state in one dimension or a tuple/vector in multiple
+dimensions. `domain` and `boundary` are required; linear boundary conditions
+use axis-keyed named tuples with `lower` and `upper` entries. Their coefficient
+callback interface remains `(x, regime)`; it is separate from HJB primitives.
+`regimes` is a nonempty tuple/vector of unique labels, defaulting to `(1,)`.
 
-The problem stores inputs with their concrete types, without copying or
-evaluating components. Mutable inputs remain shared; do not mutate regime
-membership or ordering after construction. Construction checks only the regime
-collection. [`hjb_coefficients`](@ref) checks coefficient shapes and finite
-values at supplied states and controls. [`hjb_residual`](@ref) evaluates the
-fixed-control equation from user-supplied values and derivatives, including
-nonnegative CTMC rates. Numerical boundary enforcement and mathematical
-well-posedness remain numerical-stage responsibilities. Grids, initial guesses,
-pseudo-time steps, and tolerances belong to later stages. No discretizer or
-solver is implemented yet.
+Construction stores inputs without copying or evaluating callbacks and checks
+regime labels only. Mutable inputs remain shared; do not mutate regime order.
+[`hjb_coefficients`](@ref) validates evaluated shapes, finite values, and rates.
+[`hjb_residual`](@ref) evaluates all value components from supplied derivatives.
+No spatial discretizer or PDE solver is implemented yet.
 
 # Example
 
 ```julia
-discount = (x, c, i) -> 0.05
-drift = (x, c, i) -> (i == 1 ? 0.1 : 0.2) + 0.03 * x - c
-diffusion = (x, c, i) -> 0.0
-flow = (x, c, i) -> log(c)
-transition = (x, c, i, j) -> i == 1 ? 0.02 : 0.03
-
-problem = HJBProblem(discount, drift, diffusion, flow;
+problem = HJBProblem(;
+    discount = (x, c) -> [0.05, 0.05],
+    flow = (x, c) -> log.(c),
+    drift = (x, c) -> reshape([0.1, 0.2] .+ 0.03*x .- c, 1, 2),
+    diffusion = (x, c) -> zeros(1, 2),
+    transition = (x, c) -> [0.0 0.02; 0.03 0.0],
+    regimes = (:low, :high),
     domain = (; assets = (0.0, 5.0)),
     boundary = (; assets = (
-        lower = LinearInequalityBoundary(a=-1, b=0,
-            c=(x, i) -> -inv((i == 1 ? 0.1 : 0.2) + 0.03*x)),
-        upper = LinearEqualityBoundary(a=1, b=0,
-            c=(x, i) -> inv((i == 1 ? 0.1 : 0.2) + 0.03*x)),
+        lower = LinearEqualityBoundary(1, 0, 0),
+        upper = LinearEqualityBoundary(1, 0, 0),
     )),
-    regimes = (1, 2), transition,
 )
 ```
 """

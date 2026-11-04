@@ -16,6 +16,18 @@ function _check_hjb_vector(value, dimension, name)
     return nothing
 end
 
+function _check_hjb_matrix(value, rows, columns, name)
+    value isa AbstractMatrix ||
+        throw(ArgumentError("$name must be a $rows by $columns matrix"))
+    Base.require_one_based_indexing(value)
+    size(value) == (rows, columns) ||
+        throw(DimensionMismatch("$name must have shape ($rows, $columns); got $(size(value))"))
+    for entry in value
+        _check_hjb_scalar(entry, name)
+    end
+    return nothing
+end
+
 function _hjb_dimension(problem, x)
     dimension = x isa Real ? 1 : x isa Union{Tuple,AbstractVector} ? length(x) : 0
     dimension > 0 || throw(ArgumentError("x must be a real scalar or a nonempty tuple/vector"))
@@ -30,110 +42,101 @@ function _hjb_dimension(problem, x)
     return dimension
 end
 
-function _hjb_regime_index(problem, regime)
-    index = findfirst(isequal(regime), problem.regimes)
-    index === nothing && throw(ArgumentError("unknown regime label: $regime"))
-    return index
-end
-
-function _check_hjb_spatial(value, dimension, name)
-    if value isa Real && dimension == 1
-        _check_hjb_scalar(value, name)
-    else
-        _check_hjb_vector(value, dimension, name)
-    end
-    return nothing
-end
-
-_hjb_coordinate(value::Real, k) = value
-_hjb_coordinate(value, k) = value[k]
-
 """
-    hjb_coefficients(problem, x, control, regime=first(problem.regimes))
+    hjb_coefficients(problem, x, control)
 
-Evaluate `discount`, `drift`, `diffusion`, and `flow` for one CTMC component
-of an [`HJBProblem`](@ref), returning a named tuple with those four fields.
-All callbacks receive `(x, control, regime)`. The control is passed unchanged.
+Evaluate all five HJB primitives once at `(x, control)`, returning
+`(; discount, drift, diffusion, flow, transition)` with the original result
+types, without copying or conversion. No discrete-state input is required.
 
-`x` is a finite real scalar in one dimension or a nonempty tuple/vector of
-finite reals. For a named-tuple domain, its axis count must match the state
-dimension. Discount and flow must return finite real scalars. Drift and
-diffusion must each return one finite real entry per continuous coordinate,
-using tuples/vectors; a scalar is also accepted for one continuous dimension.
+For `d` continuous coordinates and `m=length(problem.regimes)`, discount and
+flow are length-`m` vectors/tuples, drift and diffusion are `d × m` matrices,
+and transition is an `m × m` off-diagonal rate matrix or `nothing`. Check all
+entries for finite real values, rates for nonnegativity, and transition
+diagonals for exact zero. No scalar broadcasting or squeezing of singleton
+matrix dimensions is performed.
 
-Diffusion entries are volatilities of independent coordinate Brownian motions,
-so the second-order coefficients are `diffusion[k]^2 / 2`. Matrix-valued
-diffusion and correlated state innovations are outside the initial scope.
-Returns retain callback result types without copying or numeric conversion.
-Transition rates are checked separately when [`hjb_residual`](@ref) evaluates
-the switching term. This function evaluates a description, not a discretizer.
+`x` is a real scalar or nonempty tuple/vector of real coordinates. A named-tuple
+domain must have the same number of axes. Control is passed unchanged; callbacks
+define its representation. See [`HJBProblem`](@ref) for ordering and conventions.
 """
-function hjb_coefficients(problem::HJBProblem, x, control,
-                          regime = first(problem.regimes))
+function hjb_coefficients(problem::HJBProblem, x, control)
     dimension = _hjb_dimension(problem, x)
-    _hjb_regime_index(problem, regime)
-    discount = problem.discount(x, control, regime)
-    drift = problem.drift(x, control, regime)
-    diffusion = problem.diffusion(x, control, regime)
-    flow = problem.flow(x, control, regime)
-    _check_hjb_scalar(discount, "discount")
-    _check_hjb_spatial(drift, dimension, "drift")
-    _check_hjb_spatial(diffusion, dimension, "diffusion")
-    _check_hjb_scalar(flow, "flow")
-    return (; discount, drift, diffusion, flow)
-end
-
-"""
-    hjb_residual(problem, x, control, values, gradient, second_derivatives;
-                 regime=first(problem.regimes))
-
-Evaluate the fixed-control HJB residual for the selected CTMC component:
-
-    flow - discount * values[i]
-      + sum(drift[k] * gradient[k] + diffusion[k]^2 * second_derivatives[k] / 2)
-      + sum(q_ij * (values[j] - values[i]) for j != i).
-
-`values` is the full vector `v(x)` (or tuple) in `problem.regimes` order.
-`gradient` and `second_derivatives` contain the selected component's first
-and pure second derivatives, one per continuous coordinate. Scalars are also
-accepted for those derivatives in one dimension. Mixed derivatives are not
-used because the coordinate diffusion is diagonal. All entries must be finite
-real scalars. Coefficients follow [`hjb_coefficients`](@ref).
-
-Switching preserves `x`. Each off-diagonal rate is evaluated as
-`problem.transition(x, control, source_label, destination_label)` using the
-source component's control, and must be finite and nonnegative. Diagonal rates
-are never requested. With `transition=nothing`, switching contributes zero.
-
-The result is RHS minus LHS for a fixed control, not a maximization over
-controls. Policy iteration will select a feasible control for each component;
-the Bellman equation is `max_control(residual) = 0`. In particular, when
-discounting depends on control, keep `-discount * values[i]` inside that maximum.
-No derivatives are computed and no PDE is solved by this helper.
-"""
-function hjb_residual(problem::HJBProblem, x, control, values, gradient,
-                      second_derivatives; regime = first(problem.regimes))
-    coefficients = hjb_coefficients(problem, x, control, regime)
-    dimension = _hjb_dimension(problem, x)
-    index = _hjb_regime_index(problem, regime)
-    _check_hjb_vector(values, length(problem.regimes), "values")
-    _check_hjb_spatial(gradient, dimension, "gradient")
-    _check_hjb_spatial(second_derivatives, dimension, "second_derivatives")
-    value = values[index]
-    residual = coefficients.flow - coefficients.discount * value
-    for k in 1:dimension
-        residual += _hjb_coordinate(coefficients.drift, k) * _hjb_coordinate(gradient, k)
-        residual += _hjb_coordinate(coefficients.diffusion, k)^2 *
-                    _hjb_coordinate(second_derivatives, k) / 2
-    end
+    count = length(problem.regimes)
+    discount = problem.discount(x, control)
+    drift = problem.drift(x, control)
+    diffusion = problem.diffusion(x, control)
+    flow = problem.flow(x, control)
+    transition = problem.transition === nothing ? nothing : problem.transition(x, control)
+    _check_hjb_vector(discount, count, "discount")
+    _check_hjb_matrix(drift, dimension, count, "drift")
+    _check_hjb_matrix(diffusion, dimension, count, "diffusion")
+    _check_hjb_vector(flow, count, "flow")
     if problem.transition !== nothing
-        for (j, destination) in enumerate(problem.regimes)
-            j == index && continue
-            rate = problem.transition(x, control, regime, destination)
-            _check_hjb_scalar(rate, "transition rate")
-            rate >= 0 || throw(ArgumentError("off-diagonal transition rates must be nonnegative"))
-            residual += rate * (values[j] - value)
+        _check_hjb_matrix(transition, count, count, "transition")
+        for i in 1:count, j in 1:count
+            if i == j
+                iszero(transition[i,j]) ||
+                    throw(ArgumentError("transition diagonals must be zero; supply off-diagonal rates, not a generator"))
+            else
+                transition[i,j] >= 0 ||
+                    throw(ArgumentError("off-diagonal transition rates must be nonnegative"))
+            end
+        end
+    end
+    return (; discount, drift, diffusion, flow, transition)
+end
+
+function _hjb_component_residual(coefficients, values, gradient, second_derivatives, i)
+    residual = coefficients.flow[i] - coefficients.discount[i] * values[i]
+    for k in axes(coefficients.drift, 1)
+        residual += coefficients.drift[k,i] * gradient[k,i]
+        residual += coefficients.diffusion[k,i]^2 * second_derivatives[k,i] / 2
+    end
+    if coefficients.transition !== nothing
+        for j in eachindex(values)
+            j == i && continue
+            residual += coefficients.transition[i,j] * (values[j] - values[i])
         end
     end
     return residual
+end
+
+"""
+    hjb_residual(problem, x, control, values, gradient, second_derivatives)
+
+Return the length-`m` vector of fixed-control HJB residuals, RHS minus LHS,
+for all components of `v(x)`. Evaluate each primitive once at `(x, control)`.
+
+`values` is a length-`m` vector/tuple in regime order. `gradient` and
+`second_derivatives` are `d × m` matrices: entries `[k,i]` contain the first
+and pure second coordinate derivatives of component `i`. Shapes remain
+explicit for single-coordinate or single-regime problems. All entries must be
+finite reals. No mixed derivatives are used.
+
+Component `i` is
+
+    flow[i] - discount[i] * values[i]
+      + sum(drift[k,i] * gradient[k,i]
+            + diffusion[k,i]^2 * second_derivatives[k,i] / 2 for k in 1:d)
+      + sum(transition[i,j] * (values[j] - values[i]) for j != i).
+
+Switching preserves the continuous state and uses rows as source states.
+With `transition=nothing`, the switching term vanishes. See
+[`hjb_coefficients`](@ref) for coefficient validation.
+
+This is evaluation for supplied controls, values, and derivatives. It does not
+differentiate, optimize, or solve a PDE. Row-wise policy improvement maximizes
+each component's complete residual over its feasible source control, including
+the control-dependent discount term.
+"""
+function hjb_residual(problem::HJBProblem, x, control, values, gradient,
+                      second_derivatives)
+    coefficients = hjb_coefficients(problem, x, control)
+    dimension, count = size(coefficients.drift)
+    _check_hjb_vector(values, count, "values")
+    _check_hjb_matrix(gradient, dimension, count, "gradient")
+    _check_hjb_matrix(second_derivatives, dimension, count, "second_derivatives")
+    return [_hjb_component_residual(coefficients, values, gradient, second_derivatives, i)
+            for i in 1:count]
 end

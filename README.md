@@ -4,9 +4,9 @@
 
 A Julia package under development for economic PDEs that are linear conditional on a policy.
 
-**Status:** early, unregistered package. Problem setup, fixed-control HJB
-coefficient/residual evaluation, and linear boundary definitions/evaluation are
-implemented; spatial discretization and numerical solvers are not implemented yet.
+**Status:** problem setup, fixed-control HJB coefficient/residual evaluation,
+and linear boundary definitions/evaluation are implemented. Spatial
+discretization and numerical solvers are not implemented yet.
 
 ## Installation
 
@@ -18,83 +18,85 @@ Pkg.add(url="https://github.com/KaiJyunWang/PolicyPDEs.jl")
 using PolicyPDEs
 ```
 
-## Problem setup
+## Vector-valued problem setup
 
-An `HJBProblem` takes four separate components: `discount`, `drift`, `diffusion`,
-and `flow`. Each is a callable user-defined struct or a function taking the
-continuous state, control, and regime label `(x, a, i)`.
+The unknown is `v: R^d -> R^m`, with `d` continuous coordinates and `m`
+CTMC states. Only continuous coordinates belong in `domain`; `regimes`
+determines the order of value components and coefficient columns.
 
-The initial equation class is **independent coordinate Brownian motions plus a
-finite-state CTMC**. With `d` continuous coordinates and `m` regime labels, the
-unknown is `v: R^d -> R^m`. For the source component `i`, a fixed control `c`
-satisfies
+Every HJB primitive takes **`(x, control)`**, returning all discrete components
+at once. User-defined callable structs and ordinary functions are supported.
 
-```text
-rho_i(x,c) * v_i(x) = u_i(x,c)
-    + sum(mu_ki(x,c) * partial_k(v_i) for k in 1:d)
-    + 0.5 * sum(sigma_ki(x,c)^2 * partial_kk(v_i) for k in 1:d)
-    + sum(q_ij(x,c) * (v_j(x) - v_i(x)) for j != i).
-```
+| Primitive | Output shape | Entry meaning |
+|---|---|---|
+| `discount` | length `m` | `rho[i]` |
+| `flow` | length `m` | `u[i]` |
+| `drift` | `d × m` | coordinate `k`, regime `i` |
+| `diffusion` | `d × m` | coordinate volatility `sigma[k,i]` |
+| `transition` | `m × m` | intensity from row `i` to column `j` |
 
-The field names map to `rho=discount`, `u=flow`, `mu=drift`, `sigma=diffusion`,
-and `q=transition`. Every primitive is a function of state and control (constant
-parameters can be represented by callbacks that ignore those arguments). The
-discrete label selects an output component, so only continuous coordinates
-belong in `domain`. `regimes` determines the order of entries in `v(x)`.
+The transition diagonal must be zero. This is an off-diagonal rate matrix,
+with the generator diagonal derived from outgoing rates. `transition=nothing`
+means zero switching. The volatility matrix's columns index regimes; each
+continuous coordinate has an independent Brownian shock. There are no mixed
+second derivatives. Shapes stay explicit even for `d=1` or `m=1`.
 
 ```julia
 using PolicyPDEs
 
-discount = (x, c, i) -> 0.05
-drift = (x, c, i) -> (i == 1 ? 0.1 : 0.2) + 0.03 * x - c
-diffusion = (x, c, i) -> 0.0
-flow = (x, c, i) -> log(c)
-transition = (x, c, i, j) -> i == 1 ? 0.02 : 0.03
-domain = (; assets = (0.0, 5.0))
-marginal = (x, i) -> inv((i == 1 ? 0.1 : 0.2) + 0.03*x)
-boundary = (; assets = (
-    lower = LinearInequalityBoundary(a=-1, b=0, c=(x, i) -> -marginal(x, i)),
-    upper = LinearEqualityBoundary(a=1, b=0, c=marginal),
+discount = (x,c) -> [0.05, 0.05]
+flow = (x,c) -> log.(c)
+drift = (x,c) -> reshape([0.1,0.2] .+ 0.03*x .- c, 1, 2)
+diffusion = (x,c) -> zeros(1,2)
+transition = (x,c) -> [0.0 0.02; 0.03 0.0]
+domain = (; assets=(0.0,5.0))
+
+# Boundary coefficient callbacks have a separate (x, regime) interface.
+marginal = (x,i) -> inv([0.1,0.2][i] + 0.03*x)
+boundary = (; assets=(
+    lower=LinearInequalityBoundary(a=-1,b=0,c=(x,i)->-marginal(x,i)),
+    upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
 ))
-problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
-                     regimes = (1, 2), transition)
+problem = HJBProblem(;discount,drift,diffusion,flow,domain,boundary,
+                     regimes=(1,2),transition)
 ```
 
-`transition(x, a, i, j)` supplies the nonnegative intensity from regime `i` to
-regime `j`, for `i != j`. The coupling is
-`sum(q_ij * (v_j - v_i) for j != i)`, as in finite-income-state HJB systems.
-It may depend on the continuous state and source-regime control. By default,
-`regimes = (1,)` describes a single PDE; `transition = nothing` means no switching.
-`diffusion` supplies one volatility per continuous coordinate, as a tuple or
-vector. The second-order coefficients are `sigma[k]^2 / 2`; there are no mixed
-second derivatives. Scalar drift and volatility are also accepted in one
-dimension. Matrix-valued diffusion is outside the initial supported equation class.
+The control is passed unchanged. In this example `c=[c_low,c_high]` holds a
+control for each regime. Callbacks may instead define structured or shared
+candidate controls. For row-wise policy improvement, coefficient column `i`,
+discount/flow entry `i`, and transition row `i` depend on source control
+`c_i`. All five primitives may depend on continuous state and control.
 
-Inputs retain their types without copying or callback evaluation. Construction
-checks for nonempty, unique regime labels. Evaluation helpers validate callback
-results without changing their types. Numerical boundary enforcement and policy
-optimization await the spatial discretization and solver interfaces.
-See `?HJBProblem` and the [callable-struct example](examples/two_income_setup.jl).
+See the [callable-struct example](examples/two_income_setup.jl) and the
+[two-coordinate example](examples/independent_diffusion_setup.jl).
 
-## Evaluating the equation
+## Evaluating all equations together
 
 ```julia
-coefficients = hjb_coefficients(problem, 1.0, 1.0, 1)
-# v(x) has two components. Supply derivatives for component 1 only.
-residual = hjb_residual(problem, 1.0, 1.0, [1.0, 3.0], 0.0, 0.0; regime=1)
-# residual is approximately -0.01, using the two-income problem above.
+control = [1.0,1.0]
+coefficients = hjb_coefficients(problem,1.0,control)
+residuals = hjb_residual(problem,1.0,control,[1.0,3.0],zeros(1,2),zeros(1,2))
+# approximately [-0.01,-0.21]
 ```
 
-The residual is RHS minus LHS for a supplied control. The Bellman equation
-maximizes this entire residual over feasible controls, including the term
-`-rho(x,c)*v_i(x)` when discounting depends on the control. Each source regime
-uses its own control when evaluating coefficients and outgoing transition rates.
-`hjb_residual` checks the value-vector length, derivative dimensions, and finite
-nonnegative off-diagonal rates. It does not compute derivatives or optimize controls.
+`hjb_coefficients` evaluates all five callbacks once and validates their shapes
+and finite real entries, including nonnegative off-diagonal rates.
+`hjb_residual` returns a length-`m` vector, using a length-`m` value vector
+and `d × m` first-derivative and pure-second-derivative matrices.
+Entry `[k,i]` refers to continuous coordinate `k` of value component `i`.
 
-For multiple continuous coordinates, pass tuple/vector states, drift, volatility,
-gradients, and pure second derivatives in domain-axis order. See the
-[two-coordinate setup example](examples/independent_diffusion_setup.jl).
+For fixed controls, component `i` is RHS minus LHS:
+
+```text
+u[i] - rho[i]*v[i]
+  + sum(mu[k,i]*partial_k(v_i) + sigma[k,i]^2*partial_kk(v_i)/2 for k in 1:d)
+  + sum(rates[i,j]*(v[j]-v[i]) for j != i).
+```
+
+The Bellman equation maximizes each complete residual over feasible source
+controls, including control-dependent discounting. Switching preserves the
+continuous state. The evaluation helpers do not differentiate, optimize,
+assemble a grid, or solve a PDE.
 
 ## Linear boundary conditions
 
@@ -136,7 +138,7 @@ choice, not a general equivalence between state constraints and equalities.
 Set up the economic problem, discretize space, then solve:
 
 ```julia
-# Proposed API; not implemented yet.
+# Spatial discretization and solve API are proposed, not implemented yet.
 problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
                      regimes = (1, 2), transition)
 discrete = discretize(problem, grid, UpwindFiniteDifference())
