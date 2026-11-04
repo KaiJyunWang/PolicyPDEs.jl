@@ -3,15 +3,16 @@
 ## Implemented: bulk HJB problem API
 
 ```julia
-HJBProblem(discount,drift,diffusion,flow;domain,boundary,regimes=(1,),transition=nothing)
-HJBProblem(;discount,drift,diffusion,flow,domain,boundary,regimes=(1,),transition=nothing)
+HJBProblem(discount,drift,diffusion,flow;domain,boundary,transition=nothing)
+HJBProblem(;discount,drift,diffusion,flow,domain,boundary,transition=nothing)
 ```
 
 The problem describes `v: R^d -> R^m`. The continuous state x has d coordinates;
-m CTMC states index output components, not domain/grid axes. Regime metadata is
-a nonempty tuple/vector of unique labels. Domain-axis order determines continuous
-rows; regime order determines vector entries, matrix columns, and switching
-source/destination positions.
+m CTMC states index output components, not domain/grid axes. The nonzero component
+count m is inferred from length(discount(x,control)) at evaluation; there is no
+separate label collection or count stored in the problem. Domain-axis order
+determines continuous rows. All vectors, matrix columns, and switching
+source/destination positions use the same component ordering.
 
 All five HJB primitives use `(x,control)`, with no discrete-state input:
 
@@ -35,9 +36,11 @@ policy improvement, source-i entries and transition row i depend on source
 control c_i only. Cross-regime control dependence would require a different
 optimization interface and is outside the initial row-wise solver contract.
 
-Construction preserves concrete callback types without evaluation/copying and
-checks regime metadata. Domain/boundary data are required. Mutating shared
-inputs changes the problem; regime membership and order must remain fixed.
+Construction preserves concrete callback types without evaluation/copying.
+Domain/boundary data are required. Mutating shared inputs changes the problem.
+Coefficient callbacks must keep a fixed nonzero component count over states and
+controls. Evaluation validates shape agreement at each point; a future
+spatial discretizer will track that dimension consistently across grid points.
 Boundary coefficient callbacks remain a separate `(x,regime)` interface.
 
 ## Coefficients and fixed-control residuals

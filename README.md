@@ -21,8 +21,10 @@ using PolicyPDEs
 ## Vector-valued problem setup
 
 The unknown is `v: R^d -> R^m`, with `d` continuous coordinates and `m`
-CTMC states. Only continuous coordinates belong in `domain`; `regimes`
-determines the order of value components and coefficient columns.
+CTMC states. Only continuous coordinates belong in `domain`. The component count
+`m` is inferred from the nonempty vector returned by `discount(x, control)`;
+all other outputs use the same positional ordering. No component labels or
+separate count are required.
 
 Every HJB primitive takes **`(x, control)`**, returning all discrete components
 at once. User-defined callable structs and ordinary functions are supported.
@@ -58,9 +60,10 @@ boundary = (; assets=(
     upper=LinearEqualityBoundary(a=1,b=0,c=marginal),
 ))
 problem = HJBProblem(;discount,drift,diffusion,flow,domain,boundary,
-                     regimes=(1,2),transition)
+                     transition)
 ```
 
+Callbacks must keep the same nonzero component count across states and controls.
 The control is passed unchanged. In this example `c=[c_low,c_high]` holds a
 control for each regime. Callbacks may instead define structured or shared
 candidate controls. For row-wise policy improvement, coefficient column `i`,
@@ -140,7 +143,7 @@ Set up the economic problem, discretize space, then solve:
 ```julia
 # Spatial discretization and solve API are proposed, not implemented yet.
 problem = HJBProblem(; discount, drift, diffusion, flow, domain, boundary,
-                     regimes = (1, 2), transition)
+                     transition)
 discrete = discretize(problem, grid, UpwindFiniteDifference())
 solution = solve(discrete, SemiImplicit(dt=Inf); initial_value)
 

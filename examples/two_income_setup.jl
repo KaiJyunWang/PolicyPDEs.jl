@@ -40,7 +40,7 @@ function two_income_problem()
     ))
     return HJBProblem(
         ConstantDiscount([0.05, 0.05]), drift, ZeroVolatility(), LogFlow();
-        domain=(; assets=(0.0,5.0)), boundary, regimes=(1,2),
+        domain=(; assets=(0.0,5.0)), boundary,
         transition=IncomeTransitions(0.02,0.03),
     )
 end

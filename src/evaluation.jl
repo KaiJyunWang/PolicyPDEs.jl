@@ -49,7 +49,8 @@ Evaluate all five HJB primitives once at `(x, control)`, returning
 `(; discount, drift, diffusion, flow, transition)` with the original result
 types, without copying or conversion. No discrete-state input is required.
 
-For `d` continuous coordinates and `m=length(problem.regimes)`, discount and
+For `d` continuous coordinates, infer `m` from the nonempty vector returned by
+`discount(x, control)`. Discount and
 flow are length-`m` vectors/tuples, drift and diffusion are `d × m` matrices,
 and transition is an `m × m` off-diagonal rate matrix or `nothing`. Check all
 entries for finite real values, rates for nonnegativity, and transition
@@ -62,8 +63,11 @@ define its representation. See [`HJBProblem`](@ref) for ordering and conventions
 """
 function hjb_coefficients(problem::HJBProblem, x, control)
     dimension = _hjb_dimension(problem, x)
-    count = length(problem.regimes)
     discount = problem.discount(x, control)
+    discount isa Union{Tuple,AbstractVector} ||
+        throw(ArgumentError("discount must return a nonempty vector or tuple"))
+    count = length(discount)
+    count > 0 || throw(ArgumentError("discount must have at least one value component"))
     drift = problem.drift(x, control)
     diffusion = problem.diffusion(x, control)
     flow = problem.flow(x, control)
@@ -108,7 +112,7 @@ end
 Return the length-`m` vector of fixed-control HJB residuals, RHS minus LHS,
 for all components of `v(x)`. Evaluate each primitive once at `(x, control)`.
 
-`values` is a length-`m` vector/tuple in regime order. `gradient` and
+`values` is a length-`m` vector/tuple in the same component order as the callbacks. `gradient` and
 `second_derivatives` are `d × m` matrices: entries `[k,i]` contain the first
 and pure second coordinate derivatives of component `i`. Shapes remain
 explicit for single-coordinate or single-regime problems. All entries must be

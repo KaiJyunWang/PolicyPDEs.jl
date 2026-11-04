@@ -13,10 +13,9 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
         problem=@inferred HJBProblem(discount,drift,diffusion,flow;domain,boundary)
         other=@inferred HJBProblem(;discount,drift,diffusion,flow,domain,boundary)
         @test typeof(problem) === typeof(other)
-        for name in (:discount,:drift,:diffusion,:flow,:domain,:boundary,:regimes,:transition)
+        for name in (:discount,:drift,:diffusion,:flow,:domain,:boundary,:transition)
             @test getproperty(problem,name) === getproperty(other,name)
         end
-        @test problem.regimes == (1,)
         @test problem.transition === nothing
         @test problem.drift(1.0,[0.5]) ≈ reshape([0.53],1,1)
     end
@@ -26,29 +25,21 @@ include(joinpath(@__DIR__, "..", "examples", "two_income_setup.jl"))
         component=(x,c)->(calls[]+=1; error("must not evaluate during setup"))
         mutable_domain=Dict(:assets=>(0,5))
         mutable_boundary=Dict(:lower=>:state_constraint)
-        labels=[:low,:middle,:high]
         problem=HJBProblem(component,component,component,component;
-            domain=mutable_domain,boundary=mutable_boundary,regimes=labels,transition=component)
+            domain=mutable_domain,boundary=mutable_boundary,transition=component)
         @test calls[] == 0
         for name in (:discount,:drift,:diffusion,:flow,:transition)
             @test getproperty(problem,name) === component
         end
         @test problem.domain === mutable_domain
         @test problem.boundary === mutable_boundary
-        @test problem.regimes === labels
         mutable_domain[:assets]=(0,10)
         @test problem.domain[:assets] == (0,10)
     end
 
-    @testset "Regime metadata and required inputs" begin
-        problem=HJBProblem(discount,drift,diffusion,flow;domain,boundary,regimes=1:3)
-        @test problem.regimes == 1:3
-        for invalid in ((),Int[],(1,1),[:low,:low],2,Set([1,2]))
-            @test_throws ArgumentError HJBProblem(discount,drift,diffusion,flow;
-                                                domain,boundary,regimes=invalid)
-        end
-        @test_throws ArgumentError HJBProblem(discount,drift,diffusion,flow,
-                                             domain,boundary,(),nothing)
+    @testset "Required inputs and removed metadata" begin
+        @test_throws MethodError HJBProblem(discount,drift,diffusion,flow;
+                                            domain,boundary,regimes=(1,2))
         @test_throws UndefKeywordError HJBProblem(;domain,boundary)
         @test_throws UndefKeywordError HJBProblem(;discount,drift,diffusion,domain,boundary)
         @test_throws UndefKeywordError HJBProblem(;discount,drift,flow,domain,boundary)
