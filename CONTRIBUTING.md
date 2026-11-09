@@ -2,10 +2,12 @@
 
 PolicyPDEs is an early, unregistered Julia package. Start with docs/design.md to
 understand the intended problem -> spatial discretization -> solve workflow.
-The HJBProblem setup API, pointwise coefficient/residual evaluation for independent
+The HJBProblem setup API, direct `(x, v, Dv, D2v)` coefficient/residual evaluation for independent
 coordinate Brownian motions with finite CTMC switching, and linear boundary
-definitions/evaluation are implemented. Spatial discretization and numerical
-solvers are not implemented yet.
+definitions/evaluation are implemented. FiniteDifference accepts coordinate
+grids or equidistant point counts and prepares local stencils through discretize.
+Sparse Kronecker assembly and LinearSolve policy evaluation are implemented,
+including equality and active-set inequality boundaries and finite-dt Picard steps.
 
 Use Julia 1.10 or newer. Clone the repository, activate its root environment,
 and run the package tests:

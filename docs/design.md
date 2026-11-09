@@ -1,169 +1,163 @@
-# Design plan
+# Package design
 
-## Problem -> spatial discretization -> solve
+The public workflow is problem setup -> spatial discretization -> solve.
+The initial solver handles stationary vector-valued PDEs on rectangles,
+independent coordinate Brownian motion, and finite CTMC switching.
 
-Problem setup describes economic primitives, a rectangular continuous domain,
-and lower/upper face conditions. Spatial discretization will own grids, derivative
-operators, boundary enforcement, and assembly. The solver will invoke user-supplied policy updates and own iteration,
-initial guesses, pseudo-time steps, tolerances, linear solves, and diagnostics.
-Only setup and pointwise equation/boundary evaluation are implemented so far.
-
-## Rectangular geometry
-
-`RectangularDomain(lower,upper)` accepts nonempty tuples/vectors of finite real
-bounds with equal lengths and strict lower<upper ordering in every coordinate.
-Scalars are accepted for a one-dimensional interval. Bounds are snapshotted into
-tuples without converting numeric entries. `length(domain)` is d; membership
-includes boundaries/corners. Coordinates are ordered by position rather than names.
-Only continuous coordinates belong in this domain.
-
-`RectangularBoundary(lower,upper)` stores a tuple of conditions on each side,
-with one pair per coordinate. A single condition on each side is allowed in
-one dimension. Each face holds LinearEqualityBoundary or LinearInequalityBoundary.
-Condition k on the lower side belongs to x[k]=domain.lower[k], and similarly
-for the upper side. HJBProblem requires both types and checks the face count
-against the domain dimension, without evaluating user callbacks.
-
-## Bulk HJB primitives
+## Direct coefficient contract
 
 ```julia
-HJBProblem(discount,drift,diffusion,flow;control,domain,boundary,transition=nothing)
-HJBProblem(;discount,drift,diffusion,flow,control,domain,boundary,transition=nothing)
+HJBProblem(; discount, drift, diffusion, flow, transition = nothing, domain, boundary)
 ```
 
-The unknown is v: R^d -> R^m. All HJB primitives use (x,control), with no
-discrete-state input. Discount/flow are length-m vectors or tuples;
-drift/diffusion are d-by-m matrices, coordinate by value component.
-Transition is an m-by-m matrix of off-diagonal rates, source row by destination
-column, with zero diagonal. Generator diagonals equal minus outgoing rate sums.
-Transition=nothing means zero switching.
+Every supplied coefficient is a callable function/struct of `(x, v, Dv, D2v)`.
+There is no control callback or intermediate control vector in the API.
+For d continuous coordinates and m value components, v has length m;
+Dv and D2v are d-by-m first/pure-second coordinate derivatives. x is a scalar
+in 1D and a tuple/vector otherwise. Mixed second derivatives are unsupported.
 
-No labels or component count are stored. Infer m from the nonempty discount
-vector at evaluation, then validate the other outputs. Callbacks must keep a
-fixed m across states/controls; the future discretizer will track this across
-grid points. Even singleton dimensions remain explicit. Coefficient output
-positions share one ordering.
+Discount and flow return length-m vectors/tuples. Drift and diffusion return
+d-by-m matrices. Transition returns m-by-m off-diagonal intensities with zero
+diagonal, source row/destination column. Transition = nothing omits switching.
+The component count is taken from v, and all outputs must agree with it.
+Inputs are read-only. Construction checks geometry without calling coefficients.
 
-The volatility entries enumerate independent coordinate Brownian motions.
-Each sigma[k,i]^2/2 multiplies partial_kk(v_i); there are no mixed derivatives,
-cross-coordinate covariance, or spatial resets upon switching. The opaque control
-object passes unchanged to each callback. For row-wise policy improvement,
-source-i entries/columns and transition row i depend on source control i.
-Cross-component control dependence needs a different optimization contract.
+Component i's equation is
 
-`hjb_coefficients(problem,x,control)` calls the supplied HJB primitives once,
-validating finite real entries, shapes, and nonnegative transition rates.
-State x must have dimension d and lie in the closed rectangular domain.
-`hjb_residual(problem,x,control,values,gradient,second_derivatives)` returns all
-m residual components. Values are length m; derivatives are d-by-m matrices.
+    discount[i]*v[i] = flow[i]
+        + sum(drift[k, i]*Dv[k, i] + diffusion[k, i]^2*D2v[k, i]/2 for k)
+        + sum(transition[i, j]*(v[j]-v[i]) for j != i).
 
-For fixed controls, component i is
+Coefficients can depend on all values, including switching gains. Their
+**derivative dependence must be local to the corresponding component column**,
+so directional evaluations can be combined across components. An economic
+optimizer or closed-form consumption rule can be an internal model helper;
+it is not registered as part of HJBProblem. The package cannot certify economic
+optimality, feasibility, or a particular Bellman interpretation.
 
-    flow[i] - discount[i]*values[i]
-      + sum(drift[k,i]*gradient[k,i]
-            + diffusion[k,i]^2*second_derivatives[k,i]/2 for k in 1:d)
-      + sum(transition[i,j]*(values[j]-values[i]) for j != i).
+`hjb_coefficients(problem, x, v, Dv, D2v)` calls each supplied coefficient once,
+validates state bounds, input/output shapes, finite real entries and CTMC rates,
+and returns the original result arrays in a named tuple.
+`hjb_residual(problem, x, v, Dv, D2v)` returns RHS minus LHS. These pointwise helpers
+neither discretize nor choose an upwind direction.
 
-The Bellman maximum includes the entire residual, including control-dependent
-discounting. These helpers do not differentiate, optimize, or solve a PDE.
-CTMC switching preserves x.
+## Domain and boundary conditions
 
-## User-supplied control update
+RectangularDomain(lower, upper) snapshots finite, strictly ordered bounds.
+RectangularBoundary(lower = ..., upper = ...) stores one condition per coordinate
+face. LinearBoundary(a, b, c) means a*partial_k(v)+b*v = c; an inequality
+uses <= . Each coefficient can be scalar, vector/tuple, or callable with x only.
+There is no change to this state-only boundary coefficient contract.
+Coordinate derivatives point toward increasing coordinates on both faces.
 
-HJBProblem requires a callable `control(v,Dv,D2v,x)`. It is stored with its
-concrete type and is not evaluated at construction. v is a nonempty vector/tuple;
-Dv and D2v are d-by-m matrices of first and pure second derivatives. Mixed
-partials are not supplied for the initial independent-coordinate diffusion class.
-The callback must treat arguments as read-only and return an AbstractVector
-of finite real controls, without a discrete-state argument. Length/layout is
-model-defined; multiple controls may use a documented flattened ordering.
-The returned vector is passed unchanged to the economic primitives.
+NonlinearBoundary(a, b, c) defines an equality of the same form with coefficients
+depending on (x, v, Dv, D2v). Each coefficient can also be a constant scalar or
+component vector/tuple. Full derivative matrices have the same d-by-m layout as
+HJB coefficients. Nonlinear boundary callbacks see unmodified centered/one-sided
+finite differences, avoiding circular evaluation of the boundary equation itself.
+Evaluated coefficients are frozen for one linear solve and refreshed at new values.
+Convergence uses the actual refreshed boundary residual, not the frozen equation.
+Nonlinear Dirichlet conditions share equality priority and corner conflict checks.
+No general convergence guarantee is provided for nonlinear boundary maps.
 
-`update_control(problem,x,v,Dv,D2v)` checks geometry/input dimensions and calls
-the callback once. It validates the vector result without copying/conversion
-or calling HJB coefficient functions. This avoids circular dependence on
-control-dependent discounting when determining a policy. Scalar, tuple, matrix,
-nonreal, or nonfinite outputs are rejected.
+Equalities replace HJB rows. For B = a*Dv+b*v-c <= 0, let R be HJB LHS-RHS
+and q the own-node coefficient of the boundary row. The solver uses
+max(sign(q)*R, B) = 0. A zero q is rejected. Inequality derivatives use inward
+first-order differences; equality derivatives use one-sided quadratic formulas.
+At corners choose equality Dirichlet first, then value inequalities, then
+coordinate order. Only the selected condition is imposed per component;
+conflicting Dirichlet values are rejected.
 
-`hjb_residual(problem,x,v,Dv,D2v)` updates controls and delegates to the existing
-explicit-control residual evaluator. This is the Bellman residual only if the
-user actually supplies a feasible maximizer; validation does not certify that.
-Row-wise maximization must account for the complete residual, including effects
-on discount, volatility, and transition rates. The solver iteration engine and
-numerical differentiation remain future work.
+StateConstraintBoundary(derivative) has different semantics from a linear
+derivative equation: it retains the endpoint HJB and permits inward drift.
+Its scalar/vector or state-only callback supplies a zero-normal-drift derivative
+only for the unavailable outward difference (backward at lower, forward at upper).
+The available inward difference is untouched, including the backward difference
+at the second grid point. The solver validates zero drift for this supplied
+derivative and inward selected drift. Normal diffusion must be zero at the face;
+this condition does not model a reflecting diffusion. Every state-constraint
+face is enforced at corners; linear row conditions retain their existing priority.
 
-The log-consumption example supplies a callable struct using inverse marginal
-value and enforcing endpoint consumption feasibility. The two-coordinate
-example supplies a maximizer over consumption candidates 0.1:0.1:1.0, using
-values, both derivatives, state-dependent coefficients, and CTMC gains.
+## Finite differences and drift-sign selection
 
-## Componentwise linear face conditions
+FiniteDifference((n1, n2, ...)) requests equidistant endpoint-inclusive grids.
+FiniteDifference((xgrid, ygrid, ...)) accepts strictly increasing coordinate grids
+matching domain endpoints. Each axis needs at least three nodes; explicit grids
+may be nonuniform. Grid preparation evaluates no coefficient callbacks.
+TensorGrid stores coordinate axes rather than materializing tensor states.
+Coordinate 1 varies fastest, and values have shape N-by-m.
 
-LinearEqualityBoundary(a,b,c) describes a[i]*partial_k(v_i)+b[i]*v_i=c[i].
-LinearInequalityBoundary uses <=. Coefficients may be finite real scalars,
-vectors/tuples, or functions/callable structs of the full continuous state x,
-returning scalars/vectors/tuples. Scalars broadcast to m. No callback receives
-a component label. Each component must have a nonzero a or b.
+For adjacent distances l, r, the interior stencils are
 
-Constant coefficients are checked during condition construction without calling
-user functions. Evaluated vectors must match m, inferred from values in residual
-evaluation or supplied to boundary_coefficients as ncomponents. If ncomponents is
-omitted, infer it from coefficient vectors, falling back to one for all scalars.
+    forward: (-1/r, 1/r)
+    backward: (-1/l, 1/l)
+    central: (-r/(l*(l+r)), (r-l)/(l*r), l/(r*(l+r)))
+    second: (2/(l*(l+r)), -2/(l*r), 2/(r*(l+r))).
 
-The derivative uses the increasing coordinate direction on both lower/upper
-faces. Outward-normal lower-face conditions require negating a. Express >= by
-negating a,b,c together. No sign normalization is performed.
+Uniform centered stencils are second order. Arbitrary nonuniform second
+stencils need not have second-order convergence. Endpoint PDE closures use
+inward first differences and one-sided quadratic second derivatives; they do
+not guarantee generator monotonicity on inactive inequality faces.
 
-`boundary_coefficients(condition,x;ncomponents=m)` returns component
-vectors/tuples a,b,c. `boundary_residual(condition,values,derivatives;x)`
-returns a[i]*derivatives[i]+b[i]*values[i]-c[i] for all components.
-Equality residuals must be zero; inequality residuals must be nonpositive.
+For each coordinate/component, first evaluate coefficients using forward and
+backward derivatives. For their respective drift signs:
 
-The problem overload
-`boundary_residual(problem,values,gradient;x,axis,side)`
-selects one face, verifies x is in the rectangle/on that face, and extracts
-the corresponding coordinate gradient row. It never evaluates HJB callbacks.
-At corners/edges, each incident face is evaluated separately. Consistency,
-tolerances, active-set/complementarity treatment, and numerical enforcement
-remain discretizer/solver responsibilities.
+| Forward | Backward | Choice |
+|---|---|---|
+| Positive | Negative | Compare Hamiltonians |
+| Positive | Positive | Forward |
+| Negative | Negative | Backward |
+| Negative | Positive | Zero drift |
 
-## Examples and policy iteration
+Zero endpoints are admissible; Hamiltonian ties choose forward. In the last
+case, bisection in the derivative finds consistent zero-drift coefficients.
+The map must be continuous and possess a root. A validated near-zero drift is
+set exactly to zero in the frozen operator. Failure to find a root is an error.
+Coordinate choices are repeated until stable in multiple dimensions; failure to
+stabilize is also an error. No control vector is inferred or interpolated.
 
-The [two-income example](../examples/two_income_setup.jl) follows the HJB
-structure of [Achdou et al. (2022), REStud 89(1), 45-86](https://benjaminmoll.com/wp-content/uploads/2019/07/HACT.pdf)
-on assets [0,5]. Parameters are illustrative. Its lower marginal-value inequality
-follows no borrowing and the log-utility consumption first-order condition.
-The upper marginal-value equality is an explicit zero-saving truncation choice.
-It is not a general replacement for state constraints.
-[The two-coordinate example](../examples/independent_diffusion_setup.jl) uses a
-rectangle with vector bounds and distinct conditions for each coordinate face.
+## Sparse assembly and iteration
 
-With policy fixed, stack the values into a block linear system with spatial
-and CTMC generator L. Define A=diag(rho(policy))-L and b=flow(policy), with
-appropriate boundary contributions. The semi-implicit step is
+spatial_operators lifts 1D sparse derivative matrices with Kronecker products.
+assemble_operator(discrete, values) evaluates and freezes upwind coefficients,
+then left-multiplies derivative operators by drift and variance diagonals.
+CTMC blocks are assembled with sparse Kronecker products. The raw system is
+A = diag(discount)-generator and b = flow, with component-block stacking under vec.
+The returned named tuple exposes coefficients, generator, raw_A/raw_b, A/b,
+and boundary data. It contains no controls and performs no solve.
 
-    (A + I/dt)*v_next = b + v_current/dt.
+```julia
+solution = solve(discrete; dt = 100.0, initial_value, show_trace = true);
+```
 
-At dt=Inf, remove the pseudo-time terms explicitly to obtain Howard iteration.
-Start with fixed dt. Stop using the nonlinear residual with a policy greedy
-for the updated values; small value changes alone can be misleading at small dt.
+`solve` always uses Picard-type iteration, with the keyword `dt = Inf` by default.
+Each step freezes evaluated coefficients and solves
+(A+I/dt)*v_next = b+v_current/dt on HJB rows through LinearSolve.
+Boundary rows receive no pseudo-time shift. dt = Inf removes pseudo-time terms,
+giving full frozen-coefficient evaluation (Howard-type iteration).
+The default linear algorithm is sparse UMFPACK; linear_algorithm can override it.
 
-## Forward problem and milestones
+Convergence requires the stationary residual after a fresh coefficient update
+and a sufficiently small coefficient change. coefficient_tol replaces the old
+policy_tol option. Small value changes alone are insufficient. show_trace defaults
+to false and prints only aligned iteration/residual columns when enabled.
+MaxIters returns a nonconverged result; linear/active-set failures throw errors.
 
-The planned forward API will reuse the policy-conditioned generator with
-consistent boundary handling. For a conservative backward generator L,
-probability mass evolves under transpose(L). Densities with integration weights
-W use inv(W)*transpose(L)*W. Use mass internally and offer density conversion.
-Stationary distributions need normalization and nonuniqueness diagnostics.
-Transient forward solves use physical time, distinct from HJB pseudo-time.
+HJBSolution exposes values, coefficients, coefficient_change, convergence status,
+residual/boundary residual, residual history, and the final linear system.
+Nodal discount/flow have shape N-by-m; drift/diffusion d-by-N-by-m;
+transition N-by-m-by-m. There is no solution.controls or update_control helper.
+The current solver uses Float64. Arbitrary coefficient iterations need not converge.
 
-Initial implementation milestones remain:
-- A stationary consumption-saving HJB with one continuous asset coordinate.
-- Structured-grid upwinding, state constraints, and sparse policy evaluation.
-- Finite-dt semi-implicit iteration and Howard iteration.
-- Stationary/transient forward solves under a fixed policy.
-- Known/manufactured solutions, residual and grid-refinement checks, and conservation.
-- A documented end-to-end solve before stabilizing the public API.
+The self-contained example is [two income states](../examples/solve_two_income.jl).
 
-Equilibrium loops, finite-horizon HJBs, adaptive grids, and correlated diffusions
-are subsequent extensions.
+## Forward problem and later extensions
+
+The forward API remains planned. A conservative backward generator L propagates
+probability mass under transpose(L). Densities with integration weights W use
+inv(W)*transpose(L)*W. Stationary distributions need normalization and
+nonuniqueness diagnostics. Endpoint closures need conservative boundary treatment
+before the frozen HJB operator can be reused for this purpose.
+Finite-horizon HJBs, correlated diffusion, adaptive grids, and equilibrium loops
+are subsequent extensions. Julia 1.13.2 is the development target; compat retains
+Julia 1.10 pending CI verification.
