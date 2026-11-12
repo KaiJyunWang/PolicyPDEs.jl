@@ -96,19 +96,30 @@ end
     LinearBoundary(a, b, c)
     LinearBoundary(; a, b, c)
 
-Define the componentwise face equality `a[i] * partial_k(v_i) + b[i] * v_i = c[i]`.
+Define the face equality `a(x)[i] * partial_k(v_i) + b(x)[i] * v_i = c(x)[i]`.
 Its coordinate k is determined by its position in [`RectangularBoundary`](@ref).
 
-Coefficients are finite real scalars, vectors/tuples, or callable structs/functions
-`coefficient(x)` returning scalars or vectors/tuples for all value components.
-Scalars broadcast to the component count. Callbacks take the full continuous
-state with no discrete input. Constants are checked without evaluating callbacks.
+Supply state-dependent functions `a(x)`, `b(x)`, and `c(x)` returning finite real
+scalars or vectors/tuples for all value components. Scalars broadcast to the
+component count. Callbacks take the full continuous state with no discrete input;
+x is a scalar in 1D and a coordinate tuple/vector otherwise. Constant inputs are
+also accepted as shorthand for constant functions. Construction does not evaluate
+callbacks. Coefficients cannot depend on v or its derivatives; use NonlinearBoundary
+for that dependence. State dependence preserves linearity in the unknown v.
 At evaluation, each component must have at least one of a and b nonzero.
 
 The derivative follows increasing coordinate k on both lower and upper faces.
 For outward-normal conditions, negate the derivative coefficient on lower faces.
 Value (Dirichlet) conditions use a = 0, derivative (Neumann) conditions use b = 0,
 and Robin conditions use both. The solver replaces the selected HJB row.
+
+```julia
+condition = LinearBoundary(
+    a = x -> 1 + x^2,
+    b = x -> 2,
+    c = x -> [x, 2 * x],
+)
+```
 """
 struct LinearBoundary{A, B, C} <: AbstractLinearBoundary
     a::A
