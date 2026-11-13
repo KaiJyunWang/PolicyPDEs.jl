@@ -98,9 +98,17 @@ The residual is HJB RHS minus LHS, including CTMC switching gains.
 Pointwise evaluation does not select spatial upwinding. The nonzero component
 count comes from `v`, and every output must agree with it.
 
-`LinearBoundary(a, b, c)` defines `a[i] * partial_k(v_i) + b[i] * v_i = c[i]`;
-`LinearInequalityBoundary` uses <= . Boundary coefficients are scalar broadcasts,
-vectors/tuples, or functions of **x only**. Derivatives point toward increasing
+`LinearBoundary(a, b, c)` defines
+`a(x)[i] * partial_k(v_i) + b(x)[i] * v_i = c(x)[i]`;
+`LinearInequalityBoundary` uses <= . Supply functions of **x only**, returning
+scalar broadcasts or component vectors/tuples. Constants are shorthand for
+constant functions. For example:
+
+```julia
+condition = LinearBoundary(a = x -> 1 + x^2, b = x -> 2, c = x -> [x, 2 * x])
+```
+
+State-dependent coefficients keep the boundary linear in v. Derivatives point toward increasing
 coordinates at both faces. Negate all three coefficients to express >= .
 
 `boundary_coefficients(condition, x; ncomponents = m)` evaluates face coefficients.

@@ -4,6 +4,22 @@ end
 (rhs::VectorBoundaryRHS)(x) = rhs.base .+ x .+ [1, 2]
 
 @testset "Linear face boundaries" begin
+    @testset "State-dependent coefficients in multiple dimensions" begin
+        for constructor in (LinearBoundary, LinearInequalityBoundary)
+            condition = constructor(
+                a = x -> [1 + x[1], 1 + x[2]],
+                b = x -> x[1] + x[2],
+                c = x -> [x[1]^2, x[2]^2],
+            )
+            @test boundary_coefficients(condition, (1, 2)) ==
+                (; a = [2, 3], b = (3, 3), c = [1, 4])
+            @test boundary_coefficients(condition, (2, 3)) ==
+                (; a = [3, 4], b = (5, 5), c = [4, 9])
+            @test boundary_residual(condition, [1, 2], [3, 4]; x = (1, 2)) ==
+                [8, 14]
+        end
+    end
+
     @testset "Equality and inequality residuals" begin
         dirichlet = @inferred LinearBoundary(a = 0, b = 1, c = 2)
         @test boundary_residual(dirichlet, [2], [99]; x = 0) == [0]

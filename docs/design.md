@@ -45,9 +45,12 @@ neither discretize nor choose an upwind direction.
 
 RectangularDomain(lower, upper) snapshots finite, strictly ordered bounds.
 RectangularBoundary(lower = ..., upper = ...) stores one condition per coordinate
-face. LinearBoundary(a, b, c) means a*partial_k(v)+b*v = c; an inequality
-uses <= . Each coefficient can be scalar, vector/tuple, or callable with x only.
-There is no change to this state-only boundary coefficient contract.
+face. `LinearBoundary(a, b, c)` means
+`a(x)[i] * partial_k(v_i) + b(x)[i] * v_i = c(x)[i]`; an inequality uses <= .
+Users supply functions of the full continuous state x only, returning scalars
+(broadcast across components) or component vectors/tuples. Constant inputs are
+shorthand for constant functions. Coefficients may vary with state while the
+boundary equation remains linear in v and its derivative.
 Coordinate derivatives point toward increasing coordinates on both faces.
 
 NonlinearBoundary(a, b, c) defines an equality of the same form with coefficients
